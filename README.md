@@ -1,4 +1,6 @@
-# Add Bleed
+# Bleedline (Add Bleed)
+
+**Use it online:** https://mylandurray.github.io/bleedline/
 
 A single offline web page that adds bleed and trim marks to finished-size artwork, like Acrobat's *Add Bleed*.
 Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
@@ -14,7 +16,8 @@ Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
 
 ## Use
 
-Copy `AddBleed.html` to a PC or shared drive and double-click it (Chrome or Edge).
+Open the link above, or copy `AddBleed.html` to a PC or shared drive and double-click it (Chrome or Edge) to use it offline.
+Either way, files are processed in the browser and never uploaded.
 Full instructions are in the page under **? Help** (or press F1).
 
 ## Build
@@ -26,4 +29,4 @@ npm install
 npm run build
 ```
 
-`build.mjs` inlines `pdf-lib` and `src/bleed.js` into `src/index.html` to produce the one-file `AddBleed.html`.
+`index.html` just redirects GitHub Pages to `AddBleed.html`. `build.mjs` inlines `pdf-lib` and `src/bleed.js` into `src/index.html` to produce the one-file `AddBleed.html`.
