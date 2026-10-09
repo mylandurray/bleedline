@@ -779,7 +779,7 @@
   async function addBleed(PDFLib, srcBytes, kind, opts) {
     validateOpts(opts, kind);
     const {
-      PDFDocument, PDFName, PDFNumber, PDFArray, PDFDict, PDFPageLeaf, PDFPageEmbedder,
+      PDFDocument, PDFName, PDFNumber, PDFArray, PDFDict, PDFRawStream, decodePDFRawStream,
       PDFObjectCopier, PDFOperator, pushGraphicsState, popGraphicsState, rectangle, clip,
       endPath, concatTransformationMatrix, drawObject, setLineWidth, moveTo, lineTo, stroke,
     } = PDFLib;
@@ -913,22 +913,37 @@
         if (!tooBig && (crop.x0 > box.x0 + 0.3 || crop.y0 > box.y0 + 0.3 || crop.x1 < box.x1 - 0.3 || crop.y1 < box.y1 - 0.3))
           warn(`${pn}CropBox is smaller than the trim; artwork hidden by the crop will show.`);
 
-        // Copy only the page content + resources (not annotations or the page tree).
+        // The page content becomes a Form XObject in source page space, read straight from the
+        // source (not through the copier, so no unused copies end up in the file). Only the
+        // resources (fonts, images, colour spaces ...) go through the copier.
         let ref = null;
-        const contents = node.get(N('Contents'));
+        const contents = node.lookup(N('Contents'));
         if (contents) {
-          const map = new Map();
-          map.set(N('Contents'), copier.copy(contents));
+          const streams = contents instanceof PDFArray ? contents.asArray().map((r) => src.context.lookup(r)) : [contents];
+          if (!streams.every((st) => st instanceof PDFRawStream)) {
+            throw new Error(`Page ${idx + 1} content is damaged. Re-save it from Acrobat and try again.`);
+          }
+          const form = { Type: 'XObject', Subtype: 'Form', BBox: [media.x0, media.y0, media.x1, media.y1] };
           const res = node.getInheritableAttribute(N('Resources'));
-          if (res) map.set(N('Resources'), copier.copy(res));
-          const leaf = PDFPageLeaf.fromMapWithContext(map, ctx);
-          const bbox = { left: media.x0, bottom: media.y0, right: media.x1, top: media.y1 };
-          ref = ctx.nextRef();
-          // Identity matrix so form space == source page space.
-          sources.push({ pending: PDFPageEmbedder.for(leaf, bbox, [1, 0, 0, 1, 0, 0]), ref });
-        } else {
-          sources.push({ ref: null });
+          if (res) form.Resources = copier.copy(res);
+          const one = streams.length === 1 ? streams[0] : null;
+          const plain = one && one.dict.keys().every((k) => ['/Length', '/Filter', '/DecodeParms'].includes(k.asString()));
+          if (plain) {
+            // Single stream: the encoded bytes and their filters go in untouched.
+            const dict = ctx.obj(form);
+            for (const k of ['Filter', 'DecodeParms']) {
+              const v = one.dict.get(N(k));
+              if (v) dict.set(N(k), copier.copy(v));
+            }
+            ref = ctx.register(PDFRawStream.of(dict, one.getContents()));
+          } else {
+            // Several streams (or extra stream keys): decode, join with newlines, recompress.
+            const parts = [];
+            for (const st of streams) parts.push(decodePDFRawStream(st).decode(), new Uint8Array([10]));
+            ref = ctx.register(ctx.flateStream(concat(parts), form));
+          }
         }
+        sources.push({ ref });
         const s = sources[sources.length - 1];
         s.base = visualMatrix(box, rot);
         s.W = quarter ? th : tw;
@@ -936,9 +951,6 @@
         const group = node.get(N('Group'));
         if (group) s.group = copier.copy(group);
       });
-      for (const s of sources) {
-        if (s.pending) await (await s.pending).embedIntoContext(ctx, s.ref);
-      }
     } else {
       const img = kind === 'png' ? await embedPng(srcBytes) : embedJpeg(srcBytes);
       let dpi = opts.imageDpi || 300, from = 'the dpi setting';

@@ -50,8 +50,7 @@ function markPoints(content) {
  *   pages             expected page count
  *   marks             true -> trim marks must exist and lie entirely outside the BleedBox
  *   source            source PDF bytes -> the Art XObject content (decoded) must equal the page content
- *   rawContent        true -> also compare the undecoded bytes, single-stream pages
- *                     (OPT-IN: fails until phase 4a)
+ *   rawContent        true -> also compare the undecoded bytes and /Filter, single-stream pages
  *   exactCentreClip   true -> the first (centre) clip equals the TrimBox
  *                     (OPT-IN: only holds with hideSeams:false, fails with seams on)
  * Returns the loaded output PDFDocument for extra assertions.
@@ -88,6 +87,15 @@ async function checkOutput(bytes, expect) {
 
     const streams = pageStreams(doc, node), content = streams.join('\n');
 
+    // Graphics state: every Do on the page sits inside q ... Q, and q/Q balance.
+    let depth = 0;
+    for (const t of content.split(/\s+/)) {
+      if (t === 'q') depth++;
+      else if (t === 'Q') { depth--; assert.ok(depth >= 0, tag + 'unbalanced Q in page content'); }
+      else if (t === 'Do') assert.ok(depth > 0, tag + 'Do outside q ... Q');
+    }
+    assert.equal(depth, 0, tag + 'unbalanced q in page content');
+
     if (expect.exactCentreClip) {
       const m = /^\s*q\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+(-?[\d.]+)\s+re\s+W\s+n/.exec(content);
       assert.ok(m, tag + 'first clip not found');
@@ -104,16 +112,16 @@ async function checkOutput(bytes, expect) {
       const art = xo.lookup(key, PDFStream);
       const srcNode = src.getPages()[i].node;
       const srcStreams = pageStreams(src, srcNode);
-      // pdf-lib's page embedder wraps the content in one q ... Q pair; remove that wrapper first.
-      let artText = squash(decode(art).toString('latin1'));
-      const wrapped = /^q (.*) Q$/s.exec(artText);
-      if (wrapped) artText = wrapped[1];
+      // The Art form holds the page content as is (no added q ... Q: Do already saves and
+      // restores the graphics state, and every Do in AddBleed's own content sits in q ... Q).
+      const artText = squash(decode(art).toString('latin1'));
       assert.equal(artText, squash(srcStreams.join('\n')), tag + 'Art content differs from source');
       if (expect.rawContent) {
         assert.equal(srcStreams.length, 1, 'rawContent needs a single-stream source page');
         const c = srcNode.lookup(N('Contents'));
         const sc = c instanceof PDFArray ? src.context.lookup(c.get(0)) : c;
         assert.deepEqual(Buffer.from(art.getContents()), Buffer.from(sc.getContents()), tag + 'raw content bytes differ');
+        assert.equal(String(art.dict.get(N('Filter'))), String(sc.dict.get(N('Filter'))), tag + 'content /Filter differs');
       }
     }
 

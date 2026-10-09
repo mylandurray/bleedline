@@ -18,7 +18,7 @@ test('PDF with a TrimBox', async () => {
     content: [fx.fill(trim, [0, 0.5, 1, 0]), fx.dieline(trim)].join('\n'),
   });
   const r = await run(src, 'pdf');
-  await checkOutput(r.bytes, { trimMm: [90, 60], bleedMm: 3, marks: true, source: src, pages: 1 });
+  await checkOutput(r.bytes, { trimMm: [90, 60], bleedMm: 3, marks: true, source: src, rawContent: true, pages: 1 });
 });
 
 test('PDF with a TrimBox, seams off: centre clip is the TrimBox', async () => {
@@ -154,4 +154,51 @@ test('hideSeams: true still adds transparency groups', async () => {
   const src = await fx.page({ media: [120 * MM, 90 * MM], trim, content: fx.fill(trim, [1, 0, 0, 0]) });
   const r = await run(src, 'pdf', { marks: false, hideSeams: true });
   assert.equal(await hasTransparencyGroup(r.bytes), true);
+});
+
+// ---------- page content copied once (phase 4a) ----------
+
+test('single content stream: raw bytes and /Filter reused as is', async () => {
+  const src = await simple();
+  const r = await run(src, 'pdf', { marks: false });
+  await checkOutput(r.bytes, { trimMm: [100, 70], bleedMm: 3, source: src, rawContent: true });
+});
+
+test('large page (25k operators): output stays within 10% of the source size', async () => {
+  let seed = 1;
+  const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+  const ops = [];
+  for (let i = 0; i < 5000; i++) {
+    ops.push(`${(rnd()).toFixed(3)} ${(rnd()).toFixed(3)} 0 0 k ${(rnd() * 280).toFixed(2)} ${(rnd() * 190).toFixed(2)} ${(rnd() * 20).toFixed(2)} ${(rnd() * 20).toFixed(2)} re f`);
+  }
+  // 5000 x (q, k, re, f, Q) = 25k operators
+  const src = await fx.page({ media: [100 * MM, 70 * MM], content: ops.map((o) => `q ${o} Q`).join('\n') });
+  const r = await run(src, 'pdf', { marks: false });
+  await checkOutput(r.bytes, { trimMm: [100, 70], bleedMm: 3, source: src, rawContent: true });
+  const ratio = r.bytes.length / src.length;
+  assert.ok(ratio < 1.1, `output ${r.bytes.length} B vs source ${src.length} B (x${ratio.toFixed(2)})`);
+});
+
+test('multi-stream page: decoded content joined and equal', async () => {
+  const src = await fx.page({
+    media: [100 * MM, 70 * MM], split: true,
+    content: [fx.fill(fx.mmRect(0, 0, 50, 70), [1, 0, 0, 0]), fx.fill(fx.mmRect(50, 0, 50, 70), [0, 1, 0, 0]), fx.dieline(fx.mmRect(5, 5, 90, 60))],
+  });
+  const r = await run(src, 'pdf', { marks: false });
+  await checkOutput(r.bytes, { trimMm: [100, 70], bleedMm: 3, source: src });
+});
+
+test('single stream with extra dict keys: decoded and recompressed', async () => {
+  const src = await fx.page({ media: [100 * MM, 70 * MM], content: fx.fill(fx.mmRect(0, 0, 100, 70), [0, 0, 1, 0]) }, {
+    setup: (doc) => {
+      const c = doc.getPages()[0].node.lookup(PDFLib.PDFName.of('Contents'));
+      doc.context.lookup(c.get(0)).dict.set(PDFLib.PDFName.of('DL'), PDFLib.PDFNumber.of(42));
+    },
+  });
+  const r = await run(src, 'pdf', { marks: false });
+  const out = await checkOutput(r.bytes, { trimMm: [100, 70], bleedMm: 3, source: src });
+  // No leftover copy of the source content stream: only the Art form carries /DL-free content.
+  for (const [, obj] of out.context.enumerateIndirectObjects()) {
+    if (obj instanceof PDFLib.PDFRawStream) assert.equal(obj.dict.get(PDFLib.PDFName.of('DL')), undefined, 'orphan source stream copied');
+  }
 });
