@@ -46,16 +46,16 @@
 
   // One axis of a cell transform: returns [scale, offset] mapping visual u -> output.
   // side -1 = before the trim, 0 = inside, +1 = after.
-  // The bleed copy is shifted `ov` towards the trim so the sliver it lays under the
-  // trim edge shows the artwork's own edge content, never anything from outside it.
-  function axis(side, o, len, k, ov) {
+  // `off` shifts the bleed copy towards the trim so its own artwork edge sits
+  // beyond the piece's clip (see the seam notes in addBleed).
+  function axis(side, o, len, k, off) {
     if (side === 0) return [1, o];
-    if (side < 0) return [-k, o + ov];
-    return [-k, o + len - ov + k * len];
+    if (side < 0) return [-k, o + off];
+    return [-k, o + len - off + k * len];
   }
 
-  // Overlap (pt) that hides on-screen anti-aliasing seams between neighbouring pieces.
-  const SEAM = 1;
+  // Overlap (pt, ~0.26 mm) that hides on-screen anti-aliasing seams between pieces.
+  const SEAM = 0.75;
 
   const rect = (r) => ({ x0: r.x, y0: r.y, x1: r.x + r.width, y1: r.y + r.height });
   const mm = (pt) => (pt / MM).toFixed(1);
@@ -156,7 +156,7 @@
 
   /**
    * opts: { bleedMm, mode: 'mirror'|'stretch', sliverMm, marks, markOffsetMm,
-   *         markLenMm, markWeightPt, imageDpi, useFileDpi }
+   *         markLenMm, markWeightPt, imageDpi, useFileDpi, hideSeams }
    * kind: 'pdf' | 'png' | 'jpg'
    * Returns { bytes, pages: [{wMm, hMm}], warnings: [string] }
    */
@@ -376,31 +376,43 @@
         const sliver = Math.max(0.01, (opts.sliverMm || 0.5) * MM);
         const k = opts.mode === 'stretch' ? b / sliver : 1;
 
-        // Painted in layers so every seam lies on top of matching artwork:
-        // corners first, then the side strips over them, then the untouched artwork
-        // on top, clipped exactly to the trim. Each bleed piece reaches SEAM pt past
-        // its own edge (underneath the next layer); otherwise viewers show
-        // anti-aliasing hairlines where the pieces meet. The part tucked under the
-        // trim is a copy of the artwork's own edge, so it can only ever show where
-        // the artwork itself is blank, and then only within 0.35 mm of the trim.
-        const ov = SEAM;
+        // Seams: any AA renderer draws a faint line where two separately clipped
+        // pieces meet, tinted by whatever objects are stacked under the edge.
+        // To hide it, the untouched artwork goes down first, then each bleed piece
+        // is painted over it as a transparency group: the group is rendered as one
+        // flat image and only then clipped, and its own artwork edges sit beyond
+        // the clip, so the clip edge lands on solid content. Pieces reach SEAM pt
+        // past their edge (side strips over the trim edge, corners over the sides),
+        // so the outer SEAM pt of the trim shows the mirrored edge instead of the
+        // original. With hideSeams off, every piece is clipped exactly instead.
+        const hide = opts.hideSeams !== false;
+        const ov = hide ? SEAM : 0, g = 2 * ov;
+        const pw = W + 2 * margin, ph = H + 2 * margin;
         const span = (side, o, len, ext) => (side < 0 ? [o - b, b + ext] : side > 0 ? [o + len - ext, b + ext] : [o, len]);
-        const cells = [];
-        for (const j of [-1, 0, 1]) for (const i of [-1, 0, 1]) cells.push([i, j]);
-        const layer = ([i, j]) => (i && j ? 0 : i || j ? 1 : 2);
-        cells.sort((p, q) => layer(p) - layer(q));
+        const cells = [[0, 0]];
+        for (const j of [-1, 0, 1]) for (const i of [-1, 0, 1]) if (!i !== !j) cells.push([i, j]);
+        for (const j of [-1, 1]) for (const i of [-1, 1]) cells.push([i, j]);
         for (const [i, j] of cells) {
           if (b <= 0 && (i || j)) continue;
-          const [sx, ex] = axis(i, ox, W, k, i ? ov : 0);
-          const [sy, ey] = axis(j, oy, H, k, j ? ov : 0);
+          const [sx, ex] = axis(i, ox, W, k, i ? g : 0);
+          const [sy, ey] = axis(j, oy, H, k, j ? g : 0);
           const m = mul(s.base, [sx, 0, 0, sy, ex, ey]);
           const [cx, cw] = span(i, ox, W, i ? ov : 0);
           const [cy, ch] = span(j, oy, H, j ? ov : 0);
+          let xo = name, pre = [concatTransformationMatrix(...m)];
+          if (hide && (i || j)) {
+            const grp = ctx.register(ctx.flateStream(`${m.map((v) => +v.toFixed(6)).join(' ')} cm /Art Do`, {
+              Type: 'XObject', Subtype: 'Form', BBox: [0, 0, pw, ph],
+              Group: { S: 'Transparency' }, Resources: { XObject: { Art: s.ref } },
+            }));
+            xo = page.node.newXObject('Bleed', grp);
+            pre = [];
+          }
           page.pushOperators(
             pushGraphicsState(),
             rectangle(cx, cy, cw, ch), clip(), endPath(),
-            concatTransformationMatrix(...m),
-            drawObject(name),
+            ...pre,
+            drawObject(xo),
             popGraphicsState(),
           );
         }
