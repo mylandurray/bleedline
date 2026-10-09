@@ -303,14 +303,15 @@ Merge to `main` once both work.
 
 ## Checklist
 
-- [ ] Phase 0: `npm test` harness, fixtures, invariants, `test/samples/` ignored
-- [ ] Phase 1a: option validation (bleed.js and UI)
-- [ ] Phase 1b: stale-download fix (markStale, run counter, entry.opts)
-- [ ] Phase 1c: box normalisation and TrimBox-beyond-MediaBox warning
-- [ ] Phase 2: strict crop-mark detection with the fixture table above
-- [ ] Phase 3: seam-hiding opt-in, settings migration, hint and help
-- [ ] Phase 4a: single byte-for-byte content copy
-- [ ] Phase 4b: PDF/X and PDF/A rules, trailer `/ID`, XMP instance
-- [ ] Phase 5: small fixes and wording
-- [ ] Phase 6 (optional, branch): keep existing bleed, per-file Set size
-- [ ] Phase 7: build stamp, render comparison, sample run, redistribute, close out plans
+- [x] Phase 0: `npm test` harness, fixtures, invariants, `test/samples/` ignored
+- [x] Phase 1a: option validation (bleed.js and UI)
+- [x] Phase 1b: stale-download fix (markStale, run counter, entry.opts)
+- [x] Phase 1c: box normalisation and TrimBox-beyond-MediaBox warning
+- [x] Phase 2: strict crop-mark detection with the fixture table above
+- [x] Phase 3: seam-hiding opt-in, settings migration, hint and help
+- [x] Phase 4a: single byte-for-byte content copy
+- [x] Phase 4b: PDF/X and PDF/A rules, trailer `/ID`, XMP instance
+- [x] Phase 5: small fixes and wording
+- [x] Phase 6 (optional, branch): keep existing bleed, per-file Set size
+- [x] Phase 7 steps 1–2: build stamp, render comparison script
+- [ ] Phase 7 steps 3–6: sample set, `npm run check-samples` (needs Ghostscript), Acrobat Preflight, redistribute, close out plans
