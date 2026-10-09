@@ -160,8 +160,11 @@
         Multi-page PDFs are processed page by page.</li>
     <li>The artwork should be <em>finished size with no bleed</em>. If a PDF already has bleed and a TrimBox,
         the existing bleed is replaced.</li>
-    <li>Some PDF viewers show a faint hairline at the trim edge when zoomed out; that is screen anti-aliasing and does
-        not print.</li>
+    <li>To stop PDF viewers showing hairlines where the bleed meets the artwork, the bleed is tucked 0.35 mm under the
+        trim edge, beneath the artwork. It can only show where the artwork's own edge is blank, and it is a copy of
+        that edge. Where differently coloured objects are stacked and end exactly at the trim, some viewers can still show
+        a faint line in the lower object's colour; that's screen smoothing only. In Acrobat, untick Preferences &gt;
+        Page Display &gt; Smooth line art to confirm.</li>
     <li>Images are placed at the dpi saved in the file (or the dpi setting if there isn't one), turned to match the
         camera orientation tag, and keep their embedded colour profile. JPEG data is embedded unchanged; PNGs are
         embedded losslessly (greyscale, 16-bit and indexed stay as they are). PNGs with transparency are decoded to

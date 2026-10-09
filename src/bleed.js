@@ -46,11 +46,16 @@
 
   // One axis of a cell transform: returns [scale, offset] mapping visual u -> output.
   // side -1 = before the trim, 0 = inside, +1 = after.
-  function axis(side, o, len, k) {
+  // The bleed copy is shifted `ov` towards the trim so the sliver it lays under the
+  // trim edge shows the artwork's own edge content, never anything from outside it.
+  function axis(side, o, len, k, ov) {
     if (side === 0) return [1, o];
-    if (side < 0) return [-k, o];
-    return [-k, o + len + k * len];
+    if (side < 0) return [-k, o + ov];
+    return [-k, o + len - ov + k * len];
   }
+
+  // Overlap (pt) that hides on-screen anti-aliasing seams between neighbouring pieces.
+  const SEAM = 1;
 
   const rect = (r) => ({ x0: r.x, y0: r.y, x1: r.x + r.width, y1: r.y + r.height });
   const mm = (pt) => (pt / MM).toFixed(1);
@@ -371,16 +376,26 @@
         const sliver = Math.max(0.01, (opts.sliverMm || 0.5) * MM);
         const k = opts.mode === 'stretch' ? b / sliver : 1;
 
-        // Each cell is clipped exactly to its own area, so nothing from the bleed
-        // can show inside the trim.
-        for (const j of [-1, 0, 1]) for (const i of [-1, 0, 1]) {
+        // Painted in layers so every seam lies on top of matching artwork:
+        // corners first, then the side strips over them, then the untouched artwork
+        // on top, clipped exactly to the trim. Each bleed piece reaches SEAM pt past
+        // its own edge (underneath the next layer); otherwise viewers show
+        // anti-aliasing hairlines where the pieces meet. The part tucked under the
+        // trim is a copy of the artwork's own edge, so it can only ever show where
+        // the artwork itself is blank, and then only within 0.35 mm of the trim.
+        const ov = SEAM;
+        const span = (side, o, len, ext) => (side < 0 ? [o - b, b + ext] : side > 0 ? [o + len - ext, b + ext] : [o, len]);
+        const cells = [];
+        for (const j of [-1, 0, 1]) for (const i of [-1, 0, 1]) cells.push([i, j]);
+        const layer = ([i, j]) => (i && j ? 0 : i || j ? 1 : 2);
+        cells.sort((p, q) => layer(p) - layer(q));
+        for (const [i, j] of cells) {
           if (b <= 0 && (i || j)) continue;
-          const [sx, ex] = axis(i, ox, W, k);
-          const [sy, ey] = axis(j, oy, H, k);
+          const [sx, ex] = axis(i, ox, W, k, i ? ov : 0);
+          const [sy, ey] = axis(j, oy, H, k, j ? ov : 0);
           const m = mul(s.base, [sx, 0, 0, sy, ex, ey]);
-          const cx = i < 0 ? ox - b : i === 0 ? ox : ox + W;
-          const cy = j < 0 ? oy - b : j === 0 ? oy : oy + H;
-          const cw = i === 0 ? W : b, ch = j === 0 ? H : b;
+          const [cx, cw] = span(i, ox, W, i ? ov : 0);
+          const [cy, ch] = span(j, oy, H, j ? ov : 0);
           page.pushOperators(
             pushGraphicsState(),
             rectangle(cx, cy, cw, ch), clip(), endPath(),
