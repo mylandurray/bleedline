@@ -616,7 +616,7 @@
    *         keepBleed (true = use the PDF's own bleed when its TrimBox has enough on all sides),
    *         trimWMm, trimHMm (both > 0 = manual trim size, centred) }
    * kind: 'pdf' | 'png' | 'jpg'
-   * Returns { bytes, pages: [{wMm, hMm}], warnings: [string] }
+   * Returns { bytes, pages: [{wMm, hMm, srcTrim (PDF only: [x0,y0,x1,y1] in source page space)}], warnings: [string] }
    */
   async function addBleed(PDFLib, srcBytes, kind, opts) {
     validateOpts(opts, kind);
@@ -834,6 +834,7 @@
         sources.push({ ref, keep });
         const s = sources[sources.length - 1];
         s.base = visualMatrix(box, rot);
+        s.srcTrim = [box.x0, box.y0, box.x1, box.y1];
         s.W = quarter ? th : tw;
         s.H = quarter ? tw : th;
         const group = node.get(N('Group'));
@@ -1025,7 +1026,7 @@
 
       page.setTrimBox(ox, oy, W, H);
       page.setBleedBox(ox - b, oy - b, W + 2 * b, H + 2 * b);
-      info.push({ wMm: W / MM, hMm: H / MM });
+      info.push({ wMm: W / MM, hMm: H / MM, srcTrim: s.srcTrim });
     }
 
     function addColorSpace(node, ref) {
