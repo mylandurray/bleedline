@@ -11,22 +11,28 @@ const mmRect = (x, y, w, h) => rect(x * MM, y * MM, w * MM, h * MM);
 
 // ---------- content snippets (return PDF content-stream strings) ----------
 
-/** Crop marks around `trim`; `bleedMarks` (pt) adds a second, outer set at that bleed distance. */
-function cropMarks(trim, { offset = 9, len = 18, width = 0.25, gray = 0, bleedMarks = 0 } = {}) {
+/**
+ * Crop marks around `trim`; `bleedMarks` (pt) adds a second, outer set at that bleed distance.
+ * `omit` lists trim marks (0-7) to leave out: 0-3 vertical (left-bottom, left-top, right-bottom,
+ * right-top), 4-7 horizontal (bottom-left, bottom-right, top-left, top-right).
+ */
+function cropMarks(trim, { offset = 9, len = 18, width = 0.25, gray = 0, bleedMarks = 0, omit = [] } = {}) {
   const out = [`q ${gray} G ${n(width)} w`];
-  const set = (d) => {
+  const set = (d, skip) => {
     const xs = [trim.x - d, trim.x + trim.w + d], ys = [trim.y - d, trim.y + trim.h + d];
+    const marks = [];
     for (const x of xs) {
-      out.push(`${n(x)} ${n(trim.y - offset)} m ${n(x)} ${n(trim.y - offset - len)} l S`);
-      out.push(`${n(x)} ${n(trim.y + trim.h + offset)} m ${n(x)} ${n(trim.y + trim.h + offset + len)} l S`);
+      marks.push(`${n(x)} ${n(trim.y - offset)} m ${n(x)} ${n(trim.y - offset - len)} l S`);
+      marks.push(`${n(x)} ${n(trim.y + trim.h + offset)} m ${n(x)} ${n(trim.y + trim.h + offset + len)} l S`);
     }
     for (const y of ys) {
-      out.push(`${n(trim.x - offset)} ${n(y)} m ${n(trim.x - offset - len)} ${n(y)} l S`);
-      out.push(`${n(trim.x + trim.w + offset)} ${n(y)} m ${n(trim.x + trim.w + offset + len)} ${n(y)} l S`);
+      marks.push(`${n(trim.x - offset)} ${n(y)} m ${n(trim.x - offset - len)} ${n(y)} l S`);
+      marks.push(`${n(trim.x + trim.w + offset)} ${n(y)} m ${n(trim.x + trim.w + offset + len)} ${n(y)} l S`);
     }
+    marks.forEach((m, i) => { if (!skip.includes(i)) out.push(m); });
   };
-  set(0);
-  if (bleedMarks) set(bleedMarks);
+  set(0, omit);
+  if (bleedMarks) set(bleedMarks, []);
   out.push('Q');
   return out.join('\n');
 }
@@ -56,6 +62,67 @@ function dieline(r, { width = 0.5, cmyk = [0, 1, 1, 0] } = {}) {
 function fill(r, color = [0, 0, 0, 1]) {
   const op = color.length === 4 ? 'k' : color.length === 3 ? 'rg' : 'g';
   return `q ${color.join(' ')} ${op} ${n(r.x)} ${n(r.y)} ${n(r.w)} ${n(r.h)} re f Q`;
+}
+
+/** Registration target (circle approximated by curves, plus a cross-hair) centred on (x, y). */
+function target(x, y, r = 8) {
+  const k = 0.5523 * r;
+  return [`q 0 G 0.25 w`,
+    `${n(x + r)} ${n(y)} m ${n(x + r)} ${n(y + k)} ${n(x + k)} ${n(y + r)} ${n(x)} ${n(y + r)} c`,
+    `${n(x - k)} ${n(y + r)} ${n(x - r)} ${n(y + k)} ${n(x - r)} ${n(y)} c`,
+    `${n(x - r)} ${n(y - k)} ${n(x - k)} ${n(y - r)} ${n(x)} ${n(y - r)} c`,
+    `${n(x + k)} ${n(y - r)} ${n(x + r)} ${n(y - k)} ${n(x + r)} ${n(y)} c S`,
+    `${n(x - 1.6 * r)} ${n(y)} m ${n(x + 1.6 * r)} ${n(y)} l S`,
+    `${n(x)} ${n(y - 1.6 * r)} m ${n(x)} ${n(y + 1.6 * r)} l S Q`].join('\n');
+}
+
+// ---------- resource helpers (use inside a spec's `resources` hook) ----------
+
+/**
+ * Add an optional-content group (layer) to the document; `on: false` lists it under
+ * OCProperties /D /OFF. Returns the OCG's ref.
+ */
+function addOCG(doc, name, { on = true } = {}) {
+  const ctx = doc.context, N = PDFName.of;
+  const ref = ctx.register(ctx.obj({ Type: 'OCG', Name: PDFLib.PDFString.of(name) }));
+  let ocp = doc.catalog.lookup(N('OCProperties'));
+  if (!ocp) {
+    ocp = ctx.obj({ OCGs: [], D: { Order: [], ON: [], OFF: [] } });
+    doc.catalog.set(N('OCProperties'), ocp);
+  }
+  ocp.lookup(N('OCGs')).push(ref);
+  const d = ocp.lookup(N('D'));
+  d.lookup(N('Order')).push(ref);
+  d.lookup(N(on ? 'ON' : 'OFF')).push(ref);
+  return ref;
+}
+
+/** Optional-content membership dictionary over `ocgs` (refs), policy P (AnyOn, AllOn, ...). */
+function addOCMD(doc, ocgs, p = 'AnyOn') {
+  return doc.context.register(doc.context.obj({ Type: 'OCMD', OCGs: ocgs, P: p }));
+}
+
+/** Name a layer (OCG or OCMD ref) in the page's /Properties, for `/OC /<name> BDC ... EMC`. */
+function addProperty(pg, name, ref) {
+  const N = PDFName.of, res = pg.node.Resources();
+  let props = res.lookup(N('Properties'));
+  if (!props) { props = pg.doc.context.obj({}); res.set(N('Properties'), props); }
+  props.set(N(name), ref);
+}
+
+/**
+ * Form XObject named `name` in the page's resources. bbox [x0 y0 x1 y1] (default: page),
+ * matrix [a b c d e f], oc = OCG/OCMD ref. Draw it with `/<name> Do`.
+ */
+function addForm(pg, name, content, { bbox, matrix, oc } = {}) {
+  const ctx = pg.doc.context, N = PDFName.of;
+  const { width, height } = pg.getMediaBox();
+  const dict = { Type: 'XObject', Subtype: 'Form', BBox: bbox || [0, 0, width, height] };
+  if (matrix) dict.Matrix = matrix;
+  if (oc) dict.OC = oc;
+  const ref = ctx.register(ctx.flateStream(content, dict));
+  pg.node.setXObject(N(name), ref);
+  return ref;
 }
 
 // ---------- page / document builders ----------
@@ -164,4 +231,7 @@ function jpg({ width = 40, height = 30, comps = 3, dpi = 0 } = {}) {
   return new Uint8Array(b);
 }
 
-module.exports = { MM, rect, mmRect, cropMarks, table, dieline, fill, build, page, pdf, png, jpg };
+module.exports = {
+  MM, rect, mmRect, cropMarks, table, dieline, fill, target, addOCG, addOCMD, addProperty, addForm,
+  build, page, pdf, png, jpg,
+};

@@ -175,7 +175,10 @@
   <ul>
     <li><strong>No TrimBox</strong>: the trim is taken from crop marks on the page if there are any, otherwise the page
         size is used. If the file already includes bleed but has no marks, that will be wrong: use
-        <em>Trim size › Set size</em>. Files that look like a standard size plus bleed are flagged.</li>
+        <em>Trim size › Set size</em>. Files that look like a standard size plus bleed are flagged. If only 7 of the 8
+        marks were found, the warning says so; check the trim size.</li>
+    <li><strong>Too complex / more than one set of crop marks</strong>: the crop marks couldn't be read safely, so the
+        page size is used. Set the trim by hand under <em>Trim size › Set size</em>.</li>
     <li><strong>Printable annotations not included</strong>: stamps, comments or filled-in form fields set to print are
         left out. Flatten them in Acrobat first if they should print.</li>
     <li><strong>Layers</strong>: layers are kept with the same on/off settings as the original.</li>
@@ -196,7 +199,12 @@
     <li><strong>Trim size › Auto</strong> uses the PDF's TrimBox if it has one (a TrimBox the same as the page counts as
         none). Otherwise it looks for printer's crop marks on the page (short lines at each corner extending the trim
         edges) and uses the rectangle they mark; failing that, the CropBox / page size. Page rotation is honoured.
-        Multi-page PDFs are processed page by page.</li>
+        Multi-page PDFs are processed page by page.
+        Crop marks are only trusted when it's clear-cut: at least 7 of the 8 marks, thin (1.5 pt or less), out in the
+        margin within 25 mm of each corner, nothing drawn along the trim edges themselves (so table borders and die
+        lines aren't mistaken for marks), and a trim covering at least half the page, roughly centred. Marks on hidden
+        layers don't count. With crop marks plus bleed marks, the inner set is the trim. Anything doubtful (two
+        different sets, or a page too complex to check) falls back to the page size with a warning.</li>
     <li><strong>Trim size › Set size</strong> uses the width × height you enter (as the artwork appears on screen),
         centred on the page or image, for every loaded file. Anything outside it, such as existing bleed or marks,
         is replaced by the new bleed. Switching to <em>Set size</em> fills in the selected file's current trim.

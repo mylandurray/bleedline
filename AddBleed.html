@@ -175,7 +175,10 @@
   <ul>
     <li><strong>No TrimBox</strong>: the trim is taken from crop marks on the page if there are any, otherwise the page
         size is used. If the file already includes bleed but has no marks, that will be wrong: use
-        <em>Trim size › Set size</em>. Files that look like a standard size plus bleed are flagged.</li>
+        <em>Trim size › Set size</em>. Files that look like a standard size plus bleed are flagged. If only 7 of the 8
+        marks were found, the warning says so; check the trim size.</li>
+    <li><strong>Too complex / more than one set of crop marks</strong>: the crop marks couldn't be read safely, so the
+        page size is used. Set the trim by hand under <em>Trim size › Set size</em>.</li>
     <li><strong>Printable annotations not included</strong>: stamps, comments or filled-in form fields set to print are
         left out. Flatten them in Acrobat first if they should print.</li>
     <li><strong>Layers</strong>: layers are kept with the same on/off settings as the original.</li>
@@ -196,7 +199,12 @@
     <li><strong>Trim size › Auto</strong> uses the PDF's TrimBox if it has one (a TrimBox the same as the page counts as
         none). Otherwise it looks for printer's crop marks on the page (short lines at each corner extending the trim
         edges) and uses the rectangle they mark; failing that, the CropBox / page size. Page rotation is honoured.
-        Multi-page PDFs are processed page by page.</li>
+        Multi-page PDFs are processed page by page.
+        Crop marks are only trusted when it's clear-cut: at least 7 of the 8 marks, thin (1.5 pt or less), out in the
+        margin within 25 mm of each corner, nothing drawn along the trim edges themselves (so table borders and die
+        lines aren't mistaken for marks), and a trim covering at least half the page, roughly centred. Marks on hidden
+        layers don't count. With crop marks plus bleed marks, the inner set is the trim. Anything doubtful (two
+        different sets, or a page too complex to check) falls back to the page size with a warning.</li>
     <li><strong>Trim size › Set size</strong> uses the width × height you enter (as the artwork appears on screen),
         centred on the page or image, for every loaded file. Anything outside it, such as existing bleed or marks,
         is replaced by the new bleed. Switching to <em>Set size</em> fills in the selected file's current trim.
@@ -429,27 +437,115 @@
     }
   }
 
-  // Short, axis-aligned stroked lines (and hairline-thin filled rects) in page space.
+  // Every visible, axis-aligned stroked line (and hairline-thin filled rect) in page space:
+  // { v: vertical?, p: x (vertical) or y, a..b: extent along the line, w: stroke width in pt }.
+  // Returns { lines } or { error: 'complex' | 'unreadable' }; on error the caller must not
+  // guess a trim, because lines it didn't see could change the answer.
   function collectLines(PDFLib, page) {
-    const { PDFName, PDFDict, PDFArray, PDFRawStream, decodePDFRawStream } = PDFLib;
+    const { PDFName, PDFDict, PDFArray, PDFNumber, PDFRawStream, decodePDFRawStream } = PDFLib;
     const N = (s) => PDFName.of(s);
     const ctx = page.doc.context;
     const lines = [];
     let budget = 400000; // operators; bail out on huge artwork
+    let error = null;
     const bytesOf = (s) => (s instanceof PDFRawStream ? decodePDFRawStream(s).decode() : s.getContents());
+    const nameOf = (o) => (o instanceof PDFName ? o.asString() : '');
 
-    function run(datas, res, ctm, depth) {
+    // Optional content (layers): what the default configuration hides.
+    const ocp = page.doc.catalog.lookupMaybe(N('OCProperties'), PDFDict);
+    const cfg = ocp && ocp.lookupMaybe(N('D'), PDFDict);
+    const groupSet = (k) => {
+      const arr = cfg && cfg.lookupMaybe(N(k), PDFArray);
+      return new Set(arr ? arr.asArray().map((r) => ctx.lookup(r)) : []);
+    };
+    const offSet = groupSet('OFF'), onSet = groupSet('ON');
+    const baseOff = !!cfg && nameOf(cfg.lookup(N('BaseState'))) === '/OFF';
+    const ocgOn = (g) => (baseOff ? onSet.has(g) : !offSet.has(g));
+    function evalVE(arr, depth) { // visibility expression: [/And|/Or|/Not ...]
+      if (depth > 10) return null;
+      const items = arr.asArray(), op = nameOf(items[0]);
+      const vals = [];
+      for (const it of items.slice(1)) {
+        const o = ctx.lookup(it);
+        if (o instanceof PDFArray) { const r = evalVE(o, depth + 1); if (r === null) return null; vals.push(r); }
+        else if (o instanceof PDFDict) vals.push(ocgOn(o));
+      }
+      if (op === '/And') return vals.every(Boolean);
+      if (op === '/Or') return vals.some(Boolean);
+      if (op === '/Not') return vals.length ? !vals[0] : null;
+      return null;
+    }
+    // Is an OCG / OCMD visible? Anything we can't read counts as visible.
+    function visible(o) {
+      if (!ocp || !(o instanceof PDFDict)) return true;
+      const t = nameOf(o.lookup(N('Type')));
+      if (t === '/OCG') return ocgOn(o);
+      if (t !== '/OCMD') return true;
+      const ve = o.lookup(N('VE'));
+      if (ve instanceof PDFArray) { const r = evalVE(ve, 0); if (r !== null) return r; }
+      const g = o.lookup(N('OCGs'));
+      const groups = g instanceof PDFArray ? g.asArray().map((r) => ctx.lookup(r)) : [g];
+      const on = groups.filter((x) => x instanceof PDFDict).map(ocgOn);
+      if (!on.length) return true;
+      switch (nameOf(o.lookup(N('P')))) {
+        case '/AllOn': return on.every(Boolean);
+        case '/AnyOff': return on.some((x) => !x);
+        case '/AllOff': return on.every((x) => !x);
+        default: return on.some(Boolean); // /AnyOn
+      }
+    }
+
+    // Record a segment if it's axis-aligned, clipped to the enclosing form BBoxes.
+    function add(p, q, w, clip) {
+      const dx = Math.abs(p[0] - q[0]), dy = Math.abs(p[1] - q[1]);
+      if (Math.max(dx, dy) < 0.15) return;
+      let l;
+      if (dx < 0.15) l = { v: true, p: (p[0] + q[0]) / 2, a: Math.min(p[1], q[1]), b: Math.max(p[1], q[1]), w };
+      else if (dy < 0.15) l = { v: false, p: (p[1] + q[1]) / 2, a: Math.min(p[0], q[0]), b: Math.max(p[0], q[0]), w };
+      else return;
+      if (clip) {
+        const [plo, phi, lo, hi] = l.v ? [clip.x0, clip.x1, clip.y0, clip.y1] : [clip.y0, clip.y1, clip.x0, clip.x1];
+        if (l.p < plo - 0.5 || l.p > phi + 0.5) return;
+        l.a = Math.max(l.a, lo); l.b = Math.min(l.b, hi);
+        if (l.b - l.a < 0.15) return;
+      }
+      lines.push(l);
+    }
+
+    function run(datas, res, ctm, depth, hiddenIn, clip) {
       const stack = [];
+      const mc = []; // marked-content stack: true = hidden layer
+      let lw = 1, hidden = hiddenIn;
       let path = [], cur = null, start = null;
       const pt = (x, y) => [ctm[0] * x + ctm[2] * y + ctm[4], ctm[1] * x + ctm[3] * y + ctm[5]];
       const seg = (a, c) => path.push([a, c]);
+      const num = (v) => typeof v === 'number' && Number.isFinite(v);
       for (const data of datas) {
         for (const [op, a] of tokens(data)) {
-          if (--budget < 0) return;
+          if (--budget < 0) { error = 'complex'; return; }
           switch (op) {
-            case 'q': stack.push(ctm); break;
-            case 'Q': if (stack.length) ctm = stack.pop(); break;
-            case 'cm': if (a.length === 6) ctm = mul(a, ctm); break;
+            case 'q': stack.push([ctm, lw]); break;
+            case 'Q': if (stack.length) [ctm, lw] = stack.pop(); break;
+            case 'cm': if (a.length === 6 && a.every(num)) ctm = mul(a, ctm); break;
+            case 'w': if (num(a[0])) lw = Math.abs(a[0]); break;
+            case 'gs': {
+              const eg = res && res.lookupMaybe(N('ExtGState'), PDFDict);
+              const g = eg && typeof a[0] === 'string' ? eg.lookup(N(a[0])) : null;
+              const v = g instanceof PDFDict ? g.lookup(N('LW')) : null;
+              if (v instanceof PDFNumber) lw = Math.abs(v.asNumber());
+              break;
+            }
+            case 'BMC': mc.push(false); break;
+            case 'BDC': {
+              let h = false;
+              if (a[0] === 'OC' && typeof a[1] === 'string') {
+                const props = res && res.lookupMaybe(N('Properties'), PDFDict);
+                h = !visible(props ? props.lookup(N(a[1])) : null);
+              }
+              mc.push(h); hidden = hiddenIn || mc.includes(true);
+              break;
+            }
+            case 'EMC': mc.pop(); hidden = hiddenIn || mc.includes(true); break;
             case 'm': cur = start = pt(a[0], a[1]); break;
             case 'l': { const p = pt(a[0], a[1]); if (cur) seg(cur, p); cur = p; break; }
             case 'c': cur = pt(a[4], a[5]); break;
@@ -463,30 +559,52 @@
             case 'S': case 's': case 'B': case 'B*': case 'b': case 'b*':
             case 'f': case 'F': case 'f*': case 'n': {
               const stroked = /^[SsBb]/.test(op), filled = op !== 'S' && op !== 's' && op !== 'n';
-              for (const p of path) {
-                if (p.rect) {
-                  // A thin filled rectangle is drawn the same as a line.
-                  if (!filled) { if (stroked) for (let k = 0; k < 4; k++) lines.push([p.rect[k], p.rect[(k + 1) % 4]]); continue; }
-                  const xs = p.rect.map((q) => q[0]), ys = p.rect.map((q) => q[1]);
-                  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
-                  if (x1 - x0 < 1.5 && y1 - y0 > 2) lines.push([[(x0 + x1) / 2, y0], [(x0 + x1) / 2, y1]]);
-                  else if (y1 - y0 < 1.5 && x1 - x0 > 2) lines.push([[x0, (y0 + y1) / 2], [x1, (y0 + y1) / 2]]);
-                } else if (stroked) lines.push(p);
+              // Stroke width in page space (the CTM at paint time scales it).
+              const width = lw * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2]));
+              if (!hidden) {
+                for (const p of path) {
+                  if (p.rect) {
+                    if (stroked) { for (let k = 0; k < 4; k++) add(p.rect[k], p.rect[(k + 1) % 4], width, clip); continue; }
+                    if (!filled) continue;
+                    // A thin filled rectangle is drawn the same as a line.
+                    const xs = p.rect.map((q) => q[0]), ys = p.rect.map((q) => q[1]);
+                    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+                    if (x1 - x0 < 1.5 && y1 - y0 > 2) add([(x0 + x1) / 2, y0], [(x0 + x1) / 2, y1], x1 - x0, clip);
+                    else if (y1 - y0 < 1.5 && x1 - x0 > 2) add([x0, (y0 + y1) / 2], [x1, (y0 + y1) / 2], y1 - y0, clip);
+                  } else if (stroked) add(p[0], p[1], width, clip);
+                }
               }
               path = []; cur = start = null;
               break;
             }
             case 'Do': {
-              if (depth > 6 || !res) break;
+              if (!res || typeof a[0] !== 'string') break;
               const xd = res.lookupMaybe(N('XObject'), PDFDict);
               const x = xd && xd.lookup(N(a[0]));
               if (!x || !x.dict) break;
-              const st = x.dict.lookup(N('Subtype'));
-              if (!st || st.asString() !== '/Form') break;
+              if (nameOf(x.dict.lookup(N('Subtype'))) !== '/Form') break;
+              if (depth > 6) { error = 'unreadable'; return; } // too deep, or a form that draws itself
+              if (!visible(x.dict.lookup(N('OC')))) break; // form on a hidden layer
               const fm = x.dict.lookupMaybe(N('Matrix'), PDFArray);
               const m = fm ? fm.asArray().map((v) => v.asNumber()) : [1, 0, 0, 1, 0, 0];
-              let data; try { data = bytesOf(x); } catch (e) { break; }
-              run([data], x.dict.lookupMaybe(N('Resources'), PDFDict) || res, mul(m, ctm), depth + 1);
+              const fctm = mul(m, ctm);
+              // The form's BBox clips everything it draws.
+              let fclip = clip;
+              const bb = x.dict.lookupMaybe(N('BBox'), PDFArray);
+              if (bb && bb.size() === 4) {
+                const [bx0, by0, bx1, by1] = bb.asArray().map((v) => v.asNumber());
+                const t = (u, w) => [fctm[0] * u + fctm[2] * w + fctm[4], fctm[1] * u + fctm[3] * w + fctm[5]];
+                const cs = [t(bx0, by0), t(bx1, by0), t(bx1, by1), t(bx0, by1)];
+                const r = {
+                  x0: Math.min(...cs.map((c) => c[0])), x1: Math.max(...cs.map((c) => c[0])),
+                  y0: Math.min(...cs.map((c) => c[1])), y1: Math.max(...cs.map((c) => c[1])),
+                };
+                fclip = clip ? { x0: Math.max(r.x0, clip.x0), x1: Math.min(r.x1, clip.x1), y0: Math.max(r.y0, clip.y0), y1: Math.min(r.y1, clip.y1) } : r;
+                if (fclip.x1 <= fclip.x0 || fclip.y1 <= fclip.y0) break; // nothing visible
+              }
+              let data; try { data = bytesOf(x); } catch (e) { error = 'unreadable'; return; }
+              run([data], x.dict.lookupMaybe(N('Resources'), PDFDict) || res, fctm, depth + 1, hidden, fclip);
+              if (error) return;
               break;
             }
             default:
@@ -498,51 +616,134 @@
     const c = page.node.Contents();
     const streams = !c ? [] : c instanceof PDFArray ? c.asArray().map((r) => ctx.lookup(r)) : [c];
     const datas = [];
-    for (const s of streams) { try { datas.push(bytesOf(s)); } catch (e) { return []; } }
-    run(datas, page.node.Resources(), [1, 0, 0, 1, 0, 0], 0);
-    return lines;
+    for (const s of streams) { try { datas.push(bytesOf(s)); } catch (e) { return { error: 'unreadable' }; } }
+    const res = ctx.lookup(page.node.getInheritableAttribute(N('Resources')));
+    run(datas, res instanceof PDFDict ? res : null, [1, 0, 0, 1, 0, 0], 0, false, null);
+    return error ? { error } : { lines };
   }
 
-  // Look for printer's crop marks: short lines that extend the trim edges out
-  // into the margin at each corner. Returns {x0,y0,x1,y1} in page space or null.
-  function findCropMarks(PDFLib, page, media) {
-    const lines = collectLines(PDFLib, page);
-    const tol = 0.15, minL = 2 * MM, maxL = 40 * MM;
+  // Look for printer's crop marks: short lines that extend the trim edges out into the
+  // margin at each corner. Returns { x0, y0, x1, y1, score } in page space (score = marks
+  // found, 7 or 8), or null. A false trim crops the artwork, so anything doubtful is null;
+  // `diag.reason` is then 'complex', 'unreadable' or 'ambiguous' when that's why.
+  function findCropMarks(PDFLib, page, media, diag = {}) {
+    const got = collectLines(PDFLib, page);
+    if (got.error) { diag.reason = got.error; return null; }
+    const all = got.lines;
+    const tol = 0.15, minL = 2 * MM, maxL = 40 * MM, reach = 25 * MM, maxW = 1.5, edgeTol = 0.5;
+    const conc = 0.5 * MM;
+    // Mark-like: 2-40 mm long and no heavier than 1.5 pt (rule 5).
     const V = [], H = [];
-    for (const [[ax, ay], [bx, by]] of lines) {
-      const dx = Math.abs(ax - bx), dy = Math.abs(ay - by);
-      if (dx < tol && dy >= minL && dy <= maxL) V.push({ p: (ax + bx) / 2, a: Math.min(ay, by), b: Math.max(ay, by) });
-      else if (dy < tol && dx >= minL && dx <= maxL) H.push({ p: (ay + by) / 2, a: Math.min(ax, bx), b: Math.max(ax, bx) });
-    }
-    // Candidate edges: positions with marks on both sides (above and below, or left and right).
-    const cands = (L, lo, hi) => {
-      const byPos = [];
-      for (const l of L) {
-        let g = byPos.find((q) => Math.abs(q.p - l.p) < tol);
-        if (!g) byPos.push((g = { p: l.p, ls: [] }));
-        g.ls.push(l);
+    for (const l of all) if (l.b - l.a >= minL && l.b - l.a <= maxL && l.w <= maxW) (l.v ? V : H).push(l);
+    const marky = V.concat(H);
+    // All lines (any length or weight) by position, for the "trim edge drawn" check.
+    const byP = (L) => L.slice().sort((p, q) => p.p - q.p);
+    const allV = byP(all.filter((l) => l.v)), allH = byP(all.filter((l) => !l.v));
+
+    // Candidate edges: positions with at least one mark-like line.
+    const groups = (L, lo, hi) => {
+      const gs = [];
+      for (const l of byP(L)) {
+        const g = gs[gs.length - 1];
+        if (g && Math.abs(l.p - g.p) < tol) g.ls.push(l); else gs.push({ p: l.p, ls: [l] });
       }
-      return byPos.filter((g) => g.p > lo && g.p < hi && g.ls.length >= 2).slice(0, 60);
+      return gs.filter((g) => g.p > lo && g.p < hi);
     };
-    const xs = cands(V, media.x0, media.x1), ys = cands(H, media.y0, media.y1);
-    // Marks at an edge: one beyond `lo` (ends before it) and one beyond `hi`.
-    const ends = (g, lo, hi) => (g.ls.some((l) => l.b <= lo + tol) ? 1 : 0) + (g.ls.some((l) => l.a >= hi - tol) ? 1 : 0);
-    let best = null;
-    for (let i = 0; i < xs.length; i++) for (let i2 = 0; i2 < xs.length; i2++) {
-      const L = xs[i], R = xs[i2];
-      if (R.p - L.p < 10 * MM) continue;
-      for (let j = 0; j < ys.length; j++) for (let j2 = 0; j2 < ys.length; j2++) {
-        const B = ys[j], T = ys[j2];
-        if (T.p - B.p < 10 * MM) continue;
-        const score = ends(L, B.p, T.p) + ends(R, B.p, T.p) + ends(B, L.p, R.p) + ends(T, L.p, R.p);
-        if (score < 7) continue;
-        const area = (R.p - L.p) * (T.p - B.p);
-        // Prefer complete sets, then the innermost (trim marks sit inside any bleed marks).
-        if (!best || score > best.score || (score === best.score && area < best.area))
-          best = { score, area, x0: L.p, x1: R.p, y0: B.p, y1: T.p };
+    const W = media.x1 - media.x0, Hh = media.y1 - media.y0;
+    const mcx = (media.x0 + media.x1) / 2, mcy = (media.y0 + media.y1) / 2;
+    const xs = groups(V, media.x0, media.x1), ys = groups(H, media.y0, media.y1);
+    // Pairs that could pass rule 4: at least half the page across, centred within 10%.
+    const pairs = (gs, size, mid) => {
+      const out = [];
+      for (let i = 0; i < gs.length; i++) for (let k = i + 1; k < gs.length; k++) {
+        const lo = gs[i], hi = gs[k];
+        if (hi.p - lo.p >= 0.5 * size && Math.abs((lo.p + hi.p) / 2 - mid) <= 0.1 * size) out.push([lo, hi]);
       }
+      return out;
+    };
+    const xp = pairs(xs, W, mcx), yp = pairs(ys, Hh, mcy);
+    if (xp.length * yp.length > 2e6) { diag.reason = 'complex'; return null; }
+
+    // Rule 1: the marks along one edge line, one beyond each end of the trim edge, lying wholly
+    // outside the trim with the near end within 25 mm of the corner.
+    // Binary search: first index in `arr` (sorted by key) whose key is >= v.
+    const lower = (arr, key, v) => {
+      let lo = 0, hi = arr.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid][key] < v) lo = mid + 1; else hi = mid; }
+      return lo;
+    };
+    for (const g of xs.concat(ys)) {
+      g.byB = g.ls.slice().sort((p, q) => p.b - q.b);
+      g.byA = g.ls.slice().sort((p, q) => p.a - q.a);
     }
-    return best;
+    const pick = (g, lo, hi) => {
+      const i = lower(g.byB, 'b', lo + tol + 1e-9) - 1; // last line ending at or before the corner
+      const before = i >= 0 && g.byB[i].b >= lo - reach ? g.byB[i] : null;
+      const k = lower(g.byA, 'a', hi - tol); // first line starting at or after the other corner
+      const after = k < g.byA.length && g.byA[k].a <= hi + reach ? g.byA[k] : null;
+      return [before, after];
+    };
+    // Rule 2: total length of lines drawn along an edge, between its corners.
+    const drawn = (sorted, p, lo, hi) => {
+      const iv = [];
+      for (let i = lower(sorted, 'p', p - edgeTol); i < sorted.length; i++) {
+        const l = sorted[i];
+        if (l.p > p + edgeTol) break;
+        const a = Math.max(l.a, lo), b = Math.min(l.b, hi);
+        if (b > a) iv.push([a, b]);
+      }
+      iv.sort((u, w) => u[0] - w[0]);
+      let sum = 0, end = -Infinity;
+      for (const [a, b] of iv) { if (b > end) { sum += b - Math.max(a, end); end = b; } }
+      return sum;
+    };
+    const inOpen = (v, lo, hi) => v > lo + tol && v < hi - tol;
+    const outside = (v, lo, hi) => v < lo - tol || v > hi + tol;
+    // Rule 3: a mark-like line that starts outside the rectangle and ends inside it.
+    const crossesIn = (c) => marky.some((l) => {
+      const [plo, phi, lo, hi] = l.v ? [c.x0, c.x1, c.y0, c.y1] : [c.y0, c.y1, c.x0, c.x1];
+      if (!inOpen(l.p, plo, phi)) return false;
+      return (inOpen(l.a, lo, hi) && outside(l.b, lo, hi)) || (inOpen(l.b, lo, hi) && outside(l.a, lo, hi));
+    });
+    const wholly = (l, c) => { // line lies entirely outside rectangle c
+      const [plo, phi, lo, hi] = l.v ? [c.x0, c.x1, c.y0, c.y1] : [c.y0, c.y1, c.x0, c.x1];
+      return l.p <= plo + tol || l.p >= phi - tol || l.b <= lo + tol || l.a >= hi - tol;
+    };
+
+    const cands = [];
+    for (const [L, R] of xp) for (const [B, T] of yp) {
+      const c = { x0: L.p, x1: R.p, y0: B.p, y1: T.p };
+      const used = [...pick(L, c.y0, c.y1), ...pick(R, c.y0, c.y1), ...pick(B, c.x0, c.x1), ...pick(T, c.x0, c.x1)].filter(Boolean);
+      if (used.length < 7) continue;
+      const area = (c.x1 - c.x0) * (c.y1 - c.y0);
+      const ok = area >= 0.5 * W * Hh &&
+        drawn(allH, c.y0, c.x0, c.x1) <= 2 * MM && drawn(allH, c.y1, c.x0, c.x1) <= 2 * MM &&
+        drawn(allV, c.x0, c.y0, c.y1) <= 2 * MM && drawn(allV, c.x1, c.y0, c.y1) <= 2 * MM &&
+        !crossesIn(c);
+      cands.push({ c, score: used.length, used, ok });
+    }
+
+    const valid = cands.filter((e) => e.ok);
+    if (!valid.length) return null;
+    const top = Math.max(...valid.map((e) => e.score));
+    const tops = valid.filter((e) => e.score === top);
+    const contains = (o, i) => o.x0 <= i.x0 + tol && o.y0 <= i.y0 + tol && o.x1 >= i.x1 - tol && o.y1 >= i.y1 - tol;
+    const same = (p, q) => ['x0', 'y0', 'x1', 'y1'].every((k) => Math.abs(p[k] - q[k]) <= tol);
+    const centred = (p, q) => Math.abs(p.x0 + p.x1 - q.x0 - q.x1) / 2 <= conc && Math.abs(p.y0 + p.y1 - q.y0 - q.y1) / 2 <= conc;
+    // Several valid sets are only fine when they are trim plus bleed marks: one rectangle inside
+    // all the others, the outermost one is itself a valid set, and they share a centre. Mixed
+    // sets (some edges from each) fall between the two, so they don't change the answer.
+    const inner = tops.find((e) => tops.every((o) => contains(o.c, e.c)));
+    const outer = tops.find((e) => tops.every((o) => contains(e.c, o.c)));
+    if (!inner || !outer || !centred(inner.c, outer.c)) { diag.reason = 'ambiguous'; return null; }
+    // A rejected or less complete concentric set inside the chosen one, with its marks out in the
+    // margin, is probably the real trim (e.g. 7 of 8 trim marks inside complete bleed marks).
+    for (const e of cands) {
+      if (e === inner || same(e.c, inner.c) || !contains(inner.c, e.c) || !centred(e.c, inner.c)) continue;
+      if (e.used.every((l) => wholly(l, inner.c))) { diag.reason = 'ambiguous'; return null; }
+    }
+    const { x0, y0, x1, y1 } = inner.c;
+    return { x0, y0, x1, y1, score: top };
   }
 
   // ---------- main ----------
@@ -675,6 +876,7 @@
         const rot = p.getRotation().angle || 0;
         const quarter = ((rot % 180) + 180) % 180 === 90;
         let found = null, tooBig = false;
+        const diag = {};
         if (custom) {
           // Manual size, as seen on screen, centred on the page's trim/crop area.
           const [w, h] = quarter ? [custom.h, custom.w] : [custom.w, custom.h];
@@ -684,10 +886,11 @@
           if (box.x0 < media.x0 - 0.3 || box.y0 < media.y0 - 0.3 || box.x1 > media.x1 + 0.3 || box.y1 > media.y1 + 0.3)
             { tooBig = true; warn(`${pn}the trim size set is bigger than the page; the edges will be blank.`); }
         } else if (!hasTrim) {
-          try { found = findCropMarks(PDFLib, p, media); } catch (e) { found = null; }
+          try { found = findCropMarks(PDFLib, p, media, diag); } catch (e) { found = null; diag.reason = 'unreadable'; }
           if (found) {
-            box = found;
-            warn(`${pn}no TrimBox; trim of ${mm(box.x1 - box.x0)} × ${mm(box.y1 - box.y0)} mm found from the crop marks on the page.`);
+            box = { x0: found.x0, y0: found.y0, x1: found.x1, y1: found.y1 };
+            warn(`${pn}no TrimBox; trim of ${mm(box.x1 - box.x0)} × ${mm(box.y1 - box.y0)} mm found from the crop marks on the page` +
+              (found.score < 8 ? ` (${found.score} of 8 marks).` : '.'));
           }
         }
         const tw = box.x1 - box.x0, th = box.y1 - box.y0;
@@ -695,7 +898,12 @@
           // Nothing to add.
         } else if (!hasTrim) {
           const guess = looksLikeBleed(tw / MM, th / MM);
-          warn(`${pn}no TrimBox or crop marks, so the page size (${mm(tw)} × ${mm(th)} mm) is used as the trim.` +
+          const why = {
+            complex: 'no TrimBox, and the page is too complex to check for crop marks',
+            unreadable: "no TrimBox, and the page content couldn't be read to check for crop marks",
+            ambiguous: 'no TrimBox, and found more than one possible set of crop marks (set the trim size by hand)',
+          }[diag.reason] || 'no TrimBox or crop marks';
+          warn(`${pn}${why}, so the page size (${mm(tw)} × ${mm(th)} mm) is used as the trim.` +
             (guess ? ` It looks like ${guess} already, so check it and set` : ' If that\'s wrong, set') + ' it under Trim size > Set size.');
         } else {
           const extra = Math.min(box.x0 - media.x0, box.y0 - media.y0, media.x1 - box.x1, media.y1 - box.y1);
