@@ -100,13 +100,15 @@
         </div>
         <label class="row" id="sliverRow"><span>Edge sliver (mm)</span><input type="number" id="sliverMm" min="0.05" step="0.1" value="0.5"></label>
         <p class="hint" id="modeHint"></p>
+        <label class="row"><span>Use the file's own bleed when it has enough</span><input type="checkbox" id="keepBleed" checked></label>
+        <p class="hint">PDFs with a TrimBox and at least this much artwork beyond it on every side keep that artwork as the bleed instead of a mirror.</p>
         <label class="row"><span>Hide on-screen seams</span><input type="checkbox" id="hideSeams"></label>
         <p class="hint">Off: the trim area is exactly as supplied. On: hides hairlines some PDF viewers show where bleed meets artwork, by covering the outer 0.26 mm of the trim with the mirrored edge. For on-screen proofs.</p>
       </fieldset>
     </div>
-    <div class="panel">
-      <fieldset>
-        <legend>Trim size</legend>
+    <div class="panel" id="trimPanel">
+      <fieldset id="trimFs">
+        <legend>Trim size (selected file)</legend>
         <div class="seg">
           <label><input type="radio" name="trim" value="auto" checked><span>Auto</span></label>
           <label><input type="radio" name="trim" value="set"><span>Set size</span></label>
@@ -136,7 +138,7 @@
     </div>
     <div class="panel">
       <button class="primary" id="redo" style="width:100%">Re-run with these settings</button>
-      <p class="hint" style="margin-top:8px">Changing a setting re-processes the loaded files automatically.</p>
+      <p class="hint" style="margin-top:8px">Changing a setting re-processes the loaded files automatically (a trim size, just the selected file).</p>
     </div>
   </div>
 
@@ -161,7 +163,7 @@
     <li>Drop one or more PDF, JPG or PNG files on the drop area (or click it).</li>
     <li>Each file is processed straight away and shown in the preview. Click <strong>Download</strong> to save
         <em>name</em>_bleed.pdf. Click a file in the list to preview it.</li>
-    <li>Changing a setting re-processes all loaded files. A setting that isn't valid (empty, negative, or zero where it
+    <li>Changing a setting re-processes all loaded files; changing a trim size re-processes only the selected file. A setting that isn't valid (empty, negative, or zero where it
         must be more) is outlined in red and nothing is processed until it's fixed.</li>
   </ol>
   <h3>Bleed modes</h3>
@@ -213,11 +215,18 @@
         layers don't count. With crop marks plus bleed marks, the inner set is the trim. Anything doubtful (two
         different sets, or a page too complex to check) falls back to the page size with a warning.</li>
     <li><strong>Trim size › Set size</strong> uses the width × height you enter (as the artwork appears on screen),
-        centred on the page or image, for every loaded file. Anything outside it, such as existing bleed or marks,
-        is replaced by the new bleed. Switching to <em>Set size</em> fills in the selected file's current trim.
-        Each time the page is opened it starts on <em>Auto</em>.</li>
+        centred on the page or image. Anything outside it, such as existing bleed or marks, is replaced by the new
+        bleed. The trim size applies to the <em>selected file</em> only: click a file in the list to see or change its
+        trim. Each file keeps its own setting, and new files start on <em>Auto</em>. Switching to <em>Set size</em>
+        fills in the selected file's current trim. Trim sizes aren't saved, so the next time the page is opened
+        everything starts on <em>Auto</em>.</li>
     <li>The artwork should be <em>finished size with no bleed</em>. If a PDF already has bleed and a TrimBox,
-        the existing bleed is replaced.</li>
+        the existing bleed is kept when there is enough of it (see below), otherwise it is replaced.</li>
+    <li><strong>Use the file's own bleed when it has enough</strong> (on by default): when a PDF page has a real
+        TrimBox and its artwork (BleedBox, else the page) reaches at least the bleed amount beyond the trim on all four
+        sides, that artwork is used as the bleed, cut to the bleed size, instead of mirroring. Nothing is flipped or
+        pieced together, so there are no seams. It isn't used when the trim comes from crop marks or <em>Set size</em>.
+        If only some sides have enough, the bleed is mirrored and a warning says so.</li>
     <li><strong>Hide on-screen seams</strong> (off by default): PDF viewers draw a faint line wherever two
         separately cut pieces of artwork meet, so a plain bleed shows hairlines along the trim on screen (they don't
         print). With this on, the bleed is painted over the outer 0.26 mm of the trim with a mirror of the edge, which
@@ -239,40 +248,57 @@
   const $ = (id) => document.getElementById(id);
   const fields = ['bleedMm', 'sliverMm', 'markOffsetMm', 'markLenMm', 'markWeightPt', 'imageDpi'];
   const KEY = 'addbleed.settings';
-  const files = []; // { file, kind, url, urlRun, run, opts, pages, error, el }
+  // entry.trim = { mode: 'auto' | 'set', w, h } (mm): each file has its own trim setting.
+  const files = []; // { file, kind, trim, url, urlRun, run, opts, pages, error, el }
   let selected = null;
 
   // ---- settings ----
-  function readOpts() {
-    const o = { mode: document.querySelector('input[name=mode]:checked').value, marks: $('marks').checked, useFileDpi: $('useFileDpi').checked, hideSeams: $('hideSeams').checked };
-    // An empty field reads as NaN so it fails checkOpts() instead of quietly becoming 0.
+  // The shared settings, plus the trim size of `entry` when it is set by hand.
+  function readOpts(entry) {
+    const o = { mode: document.querySelector('input[name=mode]:checked').value, marks: $('marks').checked, useFileDpi: $('useFileDpi').checked, hideSeams: $('hideSeams').checked, keepBleed: $('keepBleed').checked };
+    // An empty field reads as NaN so it fails the checks instead of quietly becoming 0.
     for (const f of fields) o[f] = parseFloat($(f).value);
-    if (trimSet()) { o.trimWMm = parseFloat($('trimW').value); o.trimHMm = parseFloat($('trimH').value); }
+    if (entry && entry.trim.mode === 'set') { o.trimWMm = entry.trim.w; o.trimHMm = entry.trim.h; }
     return o;
   }
-  // Mirrors validateOpts() in bleed.js, but marks each bad field. Returns true if all are fine.
-  function checkOpts(o = readOpts()) {
+  // Mirrors validateOpts() in bleed.js: { fieldId: good? }.
+  function rulesFor(o) {
     const ok = (v, min, max, inclusive) => Number.isFinite(v) && (inclusive ? v >= min : v > min) && (max == null || v <= max);
-    const rules = {
+    const set = 'trimWMm' in o;
+    return {
       bleedMm: ok(o.bleedMm, 0, 50, true),
       sliverMm: o.mode !== 'stretch' || ok(o.sliverMm, 0),
       markOffsetMm: !o.marks || ok(o.markOffsetMm, 0, null, true),
       markLenMm: !o.marks || ok(o.markLenMm, 0),
       markWeightPt: !o.marks || ok(o.markWeightPt, 0),
       imageDpi: ok(o.imageDpi, 0),
-      trimW: !trimSet() || ok(o.trimWMm, 0),
-      trimH: !trimSet() || ok(o.trimHMm, 0),
+      trimW: !set || ok(o.trimWMm, 0),
+      trimH: !set || ok(o.trimHMm, 0),
     };
+  }
+  // Outlines each bad field: the shared settings and the selected file's trim. True if all are fine.
+  function checkOpts() {
     let all = true;
-    for (const [id, good] of Object.entries(rules)) { $(id).classList.toggle('bad', !good); if (!good) all = false; }
+    for (const [id, good] of Object.entries(rulesFor(readOpts(selected)))) { $(id).classList.toggle('bad', !good); if (!good) all = false; }
     return all;
   }
   const trimSet = () => document.querySelector('input[name=trim]:checked').value === 'set';
-  // The W/H values are remembered, but every session starts on Auto so a
-  // forgotten manual size can't be applied to the next day's files.
+  // Trim panel <-> selected file.
+  function panelToEntry() {
+    if (!selected) return;
+    selected.trim = { mode: trimSet() ? 'set' : 'auto', w: parseFloat($('trimW').value), h: parseFloat($('trimH').value) };
+  }
+  function entryToPanel() {
+    const t = selected ? selected.trim : { mode: 'auto' };
+    document.querySelector(`input[name=trim][value=${t.mode}]`).checked = true;
+    $('trimW').value = Number.isFinite(t.w) ? t.w : '';
+    $('trimH').value = Number.isFinite(t.h) ? t.h : '';
+    $('trimFs').disabled = !selected;
+  }
+  // Trim sizes belong to the files and aren't saved, so a forgotten manual
+  // size can't be applied to the next day's files.
   function saveOpts() {
-    const o = readOpts(); o.v = 2; delete o.trimWMm; delete o.trimHMm;
-    o.trimW = $('trimW').value; o.trimH = $('trimH').value;
+    const o = readOpts(); o.v = 3;
     try { localStorage.setItem(KEY, JSON.stringify(o)); } catch (e) {}
   }
   function loadOpts() {
@@ -282,8 +308,7 @@
     if (o.marks != null) $('marks').checked = o.marks;
     if (o.useFileDpi != null) $('useFileDpi').checked = o.useFileDpi;
     if (o.v >= 2 && o.hideSeams != null) $('hideSeams').checked = o.hideSeams;
-    if (o.trimW) $('trimW').value = o.trimW;
-    if (o.trimH) $('trimH').value = o.trimH;
+    if (o.v >= 3 && o.keepBleed != null) $('keepBleed').checked = o.keepBleed;
     const r = document.querySelector(`input[name=mode][value=${o.mode}]`); if (r) r.checked = true;
   }
   function syncUi() {
@@ -299,9 +324,10 @@
     if (moved) $('markHint').textContent = `Marks are drawn at the bleed edge (${bl} mm) so they stay off the artwork.`;
     const set = trimSet();
     $('trimRow').style.display = set ? '' : 'none';
-    $('trimHint').textContent = set
-      ? 'Used for every loaded file, centred on the page or image. Anything outside it is replaced by the new bleed.'
-      : 'Uses the PDF\'s TrimBox, else crop marks found on the page, else the page size.';
+    $('trimHint').textContent = !selected ? 'Add a file, then set its trim size here. New files start on Auto.'
+      : `For ${selected.file.name} only. ` + (set
+        ? 'Centred on the page or image; anything outside it is replaced by the new bleed.'
+        : 'Uses the PDF\'s TrimBox, else crop marks found on the page, else the page size.');
   }
 
   // ---- files ----
@@ -317,7 +343,7 @@
   function addFiles(list) {
     for (const file of list) {
       const kind = kindOf(file);
-      const entry = { file, kind, run: 0, urlRun: 0 };
+      const entry = { file, kind, trim: { mode: 'auto' }, run: 0, urlRun: 0 };
       entry.el = document.createElement('div');
       entry.el.className = 'item';
       entry.el.innerHTML = '<span class="name"></span><span class="meta"></span><button class="primary dl" title="Download the PDF with bleed"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg>Download</button><button class="rm" title="Remove">✕</button><ul class="warn"></ul>';
@@ -341,11 +367,13 @@
     meta.className = 'meta';
     if (!entry.kind) { meta.textContent = 'Not a PDF/JPG/PNG'; meta.classList.add('err'); return; }
     const run = ++entry.run; // a newer run makes this one stale
-    const opts = readOpts();
-    if (!checkOpts(opts)) {
+    const opts = readOpts(entry);
+    const rules = rulesFor(opts);
+    if (!Object.values(rules).every(Boolean)) {
       if (entry.url) URL.revokeObjectURL(entry.url);
       entry.url = null; entry.pages = null;
-      meta.textContent = 'Fix the highlighted setting'; meta.classList.add('err');
+      const own = Object.entries(rules).every(([id, good]) => good || id === 'trimW' || id === 'trimH');
+      meta.textContent = own ? "Fix this file's trim size" : 'Fix the highlighted setting'; meta.classList.add('err');
       if (selected === entry) showPreview(entry);
       return;
     }
@@ -381,6 +409,7 @@
   function select(entry) {
     selected = entry;
     for (const f of files) f.el.classList.toggle('sel', f === entry);
+    entryToPanel(); syncUi(); checkOpts();
     showPreview(entry);
   }
   // Header: trim size of the selected file (and the size with bleed).
@@ -420,8 +449,8 @@
   }
   // Called straight away on any edit: the current output no longer matches the
   // settings, so it can't be downloaded until the re-run (after the debounce) finishes.
-  function markStale() {
-    for (const f of files) {
+  function markStale(list) {
+    for (const f of list) {
       if (!f.kind) continue;
       f.run++;
       f.el.querySelector('button.dl').disabled = true;
@@ -441,17 +470,35 @@
   ['dragleave', 'drop'].forEach((t) => document.addEventListener(t, (e) => { e.preventDefault(); if (t === 'drop' || !e.relatedTarget) drop.classList.remove('over'); }));
   document.addEventListener('drop', (e) => addFiles(e.dataTransfer.files));
 
+  // Edits re-run after a short pause. A trim-size edit re-runs only the selected file;
+  // any other setting re-runs every file.
   let timer;
+  const pending = new Set();
+  function schedule(list) {
+    markStale(list);
+    for (const f of list) pending.add(f);
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const due = files.filter((f) => pending.has(f));
+      pending.clear();
+      for (const f of due) await process(f);
+    }, 150);
+  }
   const side = document.querySelector('.side');
-  side.addEventListener('input', () => { markStale(); syncUi(); checkOpts(); clearTimeout(timer); timer = setTimeout(reprocessAll, 150); });
-  side.addEventListener('change', (e) => {
+  const onEdit = (e) => {
+    const trim = $('trimPanel').contains(e.target);
     // Switching to Set size starts from the selected file's current trim.
-    if (e.target.name === 'trim' && trimSet() && selected && selected.pages) {
+    if (e.type === 'change' && e.target.name === 'trim' && trimSet() && selected && selected.pages) {
       $('trimW').value = +selected.pages[0].wMm.toFixed(1);
       $('trimH').value = +selected.pages[0].hMm.toFixed(1);
     }
-    markStale(); syncUi(); checkOpts(); saveOpts(); clearTimeout(timer); timer = setTimeout(reprocessAll, 150);
-  });
+    if (trim) panelToEntry();
+    else if (e.type === 'change') saveOpts();
+    syncUi(); checkOpts();
+    schedule(trim ? (selected ? [selected] : []) : files);
+  };
+  side.addEventListener('input', onEdit);
+  side.addEventListener('change', onEdit);
   $('redo').onclick = reprocessAll;
 
   const help = $('help');
@@ -461,7 +508,7 @@
     if (e.key === 'F1' || (e.key === '?' && !/INPUT/.test(e.target.tagName))) { e.preventDefault(); help.showModal(); }
   });
 
-  loadOpts(); syncUi(); checkOpts();
+  loadOpts(); entryToPanel(); syncUi(); checkOpts();
 })();
 </script>
 </body>
