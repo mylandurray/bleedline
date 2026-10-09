@@ -57,7 +57,11 @@
   // Overlap (pt, ~0.26 mm) that hides on-screen anti-aliasing seams between pieces.
   const SEAM = 0.75;
 
-  const rect = (r) => ({ x0: r.x, y0: r.y, x1: r.x + r.width, y1: r.y + r.height });
+  // PDF boxes may list their corners in any order, so normalise to min/max.
+  const rect = (r) => ({
+    x0: Math.min(r.x, r.x + r.width), x1: Math.max(r.x, r.x + r.width),
+    y0: Math.min(r.y, r.y + r.height), y1: Math.max(r.y, r.y + r.height),
+  });
   const mm = (pt) => (pt / MM).toFixed(1);
 
   // Common finished sizes (mm, portrait) used to spot files that already include bleed.
@@ -427,6 +431,9 @@
         const media = rect(p.getMediaBox());
         let box = rect(p.getTrimBox()); // TrimBox, else CropBox, else MediaBox
         const crop = rect(p.getCropBox());
+        for (const [name, r] of [['MediaBox', media], ['CropBox', crop], ['TrimBox', box]]) {
+          if (!(r.x1 - r.x0 >= 1 && r.y1 - r.y0 >= 1)) throw new Error(`Page ${idx + 1} has an empty ${name}`);
+        }
         const same = (r, q) => ['x0', 'y0', 'x1', 'y1'].every((key) => Math.abs(r[key] - q[key]) < 0.3);
         // A TrimBox equal to the page is what many exports write when nobody set one.
         const hasTrim = !!node.get(N('TrimBox')) && !same(box, media);
@@ -457,7 +464,8 @@
             (guess ? ` It looks like ${guess} already, so check it and set` : ' If that\'s wrong, set') + ' it under Trim size > Set size.');
         } else {
           const extra = Math.min(box.x0 - media.x0, box.y0 - media.y0, media.x1 - box.x1, media.y1 - box.y1);
-          if (extra > 0.3) warn(`${pn}already has ${mm(extra)} mm or more beyond the trim; it is replaced by the new bleed.`);
+          if (extra < -0.3) warn(`${pn}the TrimBox extends beyond the page; the edges will be blank.`);
+          else if (extra > 0.3) warn(`${pn}already has ${mm(extra)} mm or more beyond the trim; it is replaced by the new bleed.`);
         }
         if (!tooBig && (crop.x0 > box.x0 + 0.3 || crop.y0 > box.y0 + 0.3 || crop.x1 < box.x1 - 0.3 || crop.y1 < box.y1 - 0.3))
           warn(`${pn}CropBox is smaller than the trim; artwork hidden by the crop will show.`);

@@ -107,3 +107,24 @@ test('half-filled or non-positive trim W/H throws', async () => {
   await assert.rejects(run(src, 'pdf', { trimWMm: 0, trimHMm: 50 }), /Trim width and height/);
   await assert.rejects(run(src, 'pdf', { trimWMm: -5, trimHMm: 50 }), /Trim width and height/);
 });
+
+// ---------- box normalisation (phase 1c) ----------
+
+test('reversed MediaBox is normalised', async () => {
+  const src = await fx.page({ media: fx.rect(300, 400, -300, -400), content: fx.fill(fx.rect(0, 0, 300, 400), [0, 0, 0, 0.8]) });
+  const r = await run(src, 'pdf', { marks: false });
+  assert.ok(Math.abs(r.pages[0].wMm - 105.833) < 0.05 && Math.abs(r.pages[0].hMm - 141.111) < 0.05, JSON.stringify(r.pages));
+});
+
+test('zero-area MediaBox throws', async () => {
+  const src = await fx.page({ media: fx.rect(0, 0, 0, 0) });
+  await assert.rejects(run(src, 'pdf'), /Page 1 has an empty MediaBox/);
+});
+
+test('TrimBox bigger than the MediaBox warns', async () => {
+  const src = await fx.page({
+    media: [100 * MM, 70 * MM], trim: fx.mmRect(-5, -5, 110, 80), content: fx.fill(fx.mmRect(0, 0, 100, 70), [0, 0, 0, 0.8]),
+  });
+  const r = await run(src, 'pdf', { marks: false });
+  assert.ok(r.warnings.some((w) => /TrimBox extends beyond the page/.test(w)), r.warnings.join('|'));
+});
