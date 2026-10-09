@@ -44,6 +44,13 @@
   button { font: inherit; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
     padding: 5px 12px; border-radius: 6px; cursor: pointer; }
   button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  button.dl { display: inline-flex; align-items: center; gap: 7px; padding: 8px 18px; font-size: 15px; font-weight: 600;
+    border-radius: 7px; box-shadow: 0 1px 3px rgba(0,0,0,.25); }
+  button.dl svg { width: 17px; height: 17px; }
+  button.dl:hover:not(:disabled) { filter: brightness(1.1); }
+  button.dl:disabled { background: var(--line); border-color: var(--line); color: var(--muted); box-shadow: none; cursor: default; }
+  button.rm { border: 0; background: none; color: var(--muted); font-size: 16px; padding: 4px 8px; }
+  button.rm:hover { color: var(--err); }
   .work { display: grid; grid-template-rows: auto auto 1fr; gap: 12px; min-height: 0; }
   #drop { border: 2px dashed var(--line); border-radius: 8px; padding: 26px; text-align: center;
     color: var(--muted); cursor: pointer; background: var(--panel); }
@@ -710,9 +717,9 @@
       const entry = { file, kind };
       entry.el = document.createElement('div');
       entry.el.className = 'item';
-      entry.el.innerHTML = '<span class="name"></span><span class="meta"></span><button>Download</button><button title="Remove">✕</button><ul class="warn"></ul>';
+      entry.el.innerHTML = '<span class="name"></span><span class="meta"></span><button class="primary dl" title="Download the PDF with bleed"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg>Download</button><button class="rm" title="Remove">✕</button><ul class="warn"></ul>';
       entry.el.querySelector('.name').textContent = file.name;
-      const [dl, rm] = entry.el.querySelectorAll('button');
+      const dl = entry.el.querySelector('button.dl'), rm = entry.el.querySelector('button.rm');
       dl.onclick = (e) => { e.stopPropagation(); download(entry); };
       rm.onclick = (e) => { e.stopPropagation(); remove(entry); };
       entry.el.onclick = () => select(entry);
@@ -724,7 +731,7 @@
 
   async function process(entry) {
     const meta = entry.el.querySelector('.meta');
-    const dl = entry.el.querySelector('button');
+    const dl = entry.el.querySelector('button.dl');
     const wl = entry.el.querySelector('ul.warn');
     dl.disabled = true;
     wl.replaceChildren();
