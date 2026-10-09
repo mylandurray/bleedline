@@ -2,6 +2,8 @@
 // Works in the browser (PDFLib global) and in Node (pass the pdf-lib module).
 // Everything stays vector: the original page is copied once as a Form XObject
 // and redrawn flipped/stretched into each bleed strip, clipped to that strip.
+// With keepBleed, a PDF page whose TrimBox already has enough artwork around it
+// is drawn once, clipped to trim + bleed, instead.
 // PDF page content, fonts and images are copied unchanged (byte-for-byte for
 // single-stream pages; multi-part page content is joined and recompressed
 // losslessly). JPEG data is embedded as is; PNG data is passed through where
@@ -65,6 +67,7 @@
     y0: Math.min(r.y, r.y + r.height), y1: Math.max(r.y, r.y + r.height),
   });
   const mm = (pt) => (pt / MM).toFixed(1);
+  const cap = (t) => t[0].toUpperCase() + t.slice(1);
 
   // Common finished sizes (mm, portrait) used to spot files that already include bleed.
   const SIZES = { A3: [297, 420], A4: [210, 297], A5: [148, 210], A6: [105, 148], DL: [99, 210],
@@ -610,6 +613,7 @@
   /**
    * opts: { bleedMm, mode: 'mirror'|'stretch', sliverMm, marks, markOffsetMm,
    *         markLenMm, markWeightPt, imageDpi, useFileDpi, hideSeams,
+   *         keepBleed (true = use the PDF's own bleed when its TrimBox has enough on all sides),
    *         trimWMm, trimHMm (both > 0 = manual trim size, centred) }
    * kind: 'pdf' | 'png' | 'jpg'
    * Returns { bytes, pages: [{wMm, hMm}], warnings: [string] }
@@ -748,7 +752,7 @@
         const noTrim = rawTrim ? 'the TrimBox is the same as the page (no trim set)' : 'no TrimBox';
         const rot = p.getRotation().angle || 0;
         const quarter = ((rot % 180) + 180) % 180 === 90;
-        let found = null, tooBig = false;
+        let found = null, tooBig = false, keep = false;
         const diag = {};
         if (custom) {
           // Manual size, as seen on screen, centred on the page's trim/crop area.
@@ -780,7 +784,18 @@
             (guess ? ` It looks like ${guess} already, so check it and set` : ' If that\'s wrong, set') + ' it under Trim size > Set size.');
         } else {
           const extra = Math.min(box.x0 - media.x0, box.y0 - media.y0, media.x1 - box.x1, media.y1 - box.y1);
-          if (extra < -0.3) warn(`${pn}the TrimBox extends beyond the page; the edges will be blank.`);
+          // The file's own bleed: the BleedBox (else CropBox, else MediaBox), within the page.
+          const bl = rect(p.getBleedBox());
+          const av = { x0: Math.max(bl.x0, crop.x0, media.x0), y0: Math.max(bl.y0, crop.y0, media.y0),
+            x1: Math.min(bl.x1, crop.x1, media.x1), y1: Math.min(bl.y1, crop.y1, media.y1) };
+          const own = [box.x0 - av.x0, box.y0 - av.y0, av.x1 - box.x1, av.y1 - box.y1];
+          const enough = own.map((v) => v >= b - 0.01);
+          if (opts.keepBleed === true && b > 0 && enough.every(Boolean)) {
+            keep = true;
+            warn(cap(`${pn}kept the file's own ${+opts.bleedMm.toFixed(2)} mm bleed.`));
+          } else if (opts.keepBleed === true && b > 0 && extra >= -0.3 && enough.some(Boolean)) {
+            warn(cap(`${pn}file has bleed on only some sides; mirrored bleed used instead.`));
+          } else if (extra < -0.3) warn(`${pn}the TrimBox extends beyond the page; the edges will be blank.`);
           else if (extra > 0.3) warn(`${pn}already has ${mm(extra)} mm or more beyond the trim; it is replaced by the new bleed.`);
         }
         if (!tooBig && (crop.x0 > box.x0 + 0.3 || crop.y0 > box.y0 + 0.3 || crop.x1 < box.x1 - 0.3 || crop.y1 < box.y1 - 0.3))
@@ -816,7 +831,7 @@
             ref = ctx.register(ctx.flateStream(concat(parts), form));
           }
         }
-        sources.push({ ref });
+        sources.push({ ref, keep });
         const s = sources[sources.length - 1];
         s.base = visualMatrix(box, rot);
         s.W = quarter ? th : tw;
@@ -922,7 +937,7 @@
     if (claims.length) warn(`Source is ${claims.join(' and ')}: claim kept; re-verify in Acrobat Preflight before sending.`);
     let version = std.version;
     // Transparency groups need PDF 1.4. Files that claim a standard keep their version.
-    if (version && hide && b > 0 && !claims.length && +version < 1.4 && sources.some((s) => s.ref)) version = '1.4';
+    if (version && hide && b > 0 && !claims.length && +version < 1.4 && sources.some((s) => s.ref && !s.keep)) version = '1.4';
     const objectStreams = !version || (+version >= 1.5 && !strict);
 
     const info = [];
@@ -934,7 +949,17 @@
       if (W + 2 * margin > 14400 || H + 2 * margin > 14400)
         warn('Page is larger than the 5.08 m PDF limit; some software will refuse it.');
 
-      if (s.ref) {
+      if (s.ref && s.keep) {
+        // The file's own bleed: the page drawn once, clipped to trim ± bleed. No pieces, no seams.
+        const name = page.node.newXObject('Art', s.ref);
+        page.pushOperators(
+          pushGraphicsState(),
+          rectangle(ox - b, oy - b, W + 2 * b, H + 2 * b), clip(), endPath(),
+          concatTransformationMatrix(...mul(s.base, [1, 0, 0, 1, ox, oy])),
+          drawObject(name),
+          popGraphicsState(),
+        );
+      } else if (s.ref) {
         const name = page.node.newXObject('Art', s.ref);
         // Bleed scale: mirror = 1:1 reflection; stretch = sliver scaled out to bleed width.
         const sliver = Math.max(0.01, (opts.sliverMm || 0.5) * MM);

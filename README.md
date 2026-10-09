@@ -12,6 +12,8 @@ Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
   Layers, output intent, XMP, document info and transparency settings are carried over.
 - PDF/X and PDF/A files keep their claim: the output keeps the source's PDF version, and for PDF/X-1a, X-3 and
   PDF/A-1 it uses no object streams or transparency. A warning reminds you to re-verify in Acrobat Preflight.
+- PDFs that already have enough bleed beyond a real TrimBox keep their own artwork as the bleed (on by default; it falls
+  back to mirroring, with a warning, if any side is short).
 - Trim marks in registration colour (separation `All`); TrimBox and BleedBox set. Multi-page PDFs and page rotation supported.
 - Trim comes from the PDF's TrimBox, or crop marks found on the page when there isn't one, or a size you set by hand.
   Crop marks are used only when they're unambiguous (thin marks in the margins at the corners, nothing drawn along the

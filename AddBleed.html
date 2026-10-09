@@ -100,6 +100,8 @@
         </div>
         <label class="row" id="sliverRow"><span>Edge sliver (mm)</span><input type="number" id="sliverMm" min="0.05" step="0.1" value="0.5"></label>
         <p class="hint" id="modeHint"></p>
+        <label class="row"><span>Use the file's own bleed when it has enough</span><input type="checkbox" id="keepBleed" checked></label>
+        <p class="hint">PDFs with a TrimBox and at least this much artwork beyond it on every side keep that artwork as the bleed instead of a mirror.</p>
         <label class="row"><span>Hide on-screen seams</span><input type="checkbox" id="hideSeams"></label>
         <p class="hint">Off: the trim area is exactly as supplied. On: hides hairlines some PDF viewers show where bleed meets artwork, by covering the outer 0.26 mm of the trim with the mirrored edge. For on-screen proofs.</p>
       </fieldset>
@@ -217,7 +219,12 @@
         is replaced by the new bleed. Switching to <em>Set size</em> fills in the selected file's current trim.
         Each time the page is opened it starts on <em>Auto</em>.</li>
     <li>The artwork should be <em>finished size with no bleed</em>. If a PDF already has bleed and a TrimBox,
-        the existing bleed is replaced.</li>
+        the existing bleed is kept when there is enough of it (see below), otherwise it is replaced.</li>
+    <li><strong>Use the file's own bleed when it has enough</strong> (on by default): when a PDF page has a real
+        TrimBox and its artwork (BleedBox, else the page) reaches at least the bleed amount beyond the trim on all four
+        sides, that artwork is used as the bleed, cut to the bleed size, instead of mirroring. Nothing is flipped or
+        pieced together, so there are no seams. It isn't used when the trim comes from crop marks or <em>Set size</em>.
+        If only some sides have enough, the bleed is mirrored and a warning says so.</li>
     <li><strong>Hide on-screen seams</strong> (off by default): PDF viewers draw a faint line wherever two
         separately cut pieces of artwork meet, so a plain bleed shows hairlines along the trim on screen (they don't
         print). With this on, the bleed is painted over the outer 0.26 mm of the trim with a mirror of the edge, which
@@ -253,6 +260,8 @@
 // Works in the browser (PDFLib global) and in Node (pass the pdf-lib module).
 // Everything stays vector: the original page is copied once as a Form XObject
 // and redrawn flipped/stretched into each bleed strip, clipped to that strip.
+// With keepBleed, a PDF page whose TrimBox already has enough artwork around it
+// is drawn once, clipped to trim + bleed, instead.
 // PDF page content, fonts and images are copied unchanged (byte-for-byte for
 // single-stream pages; multi-part page content is joined and recompressed
 // losslessly). JPEG data is embedded as is; PNG data is passed through where
@@ -316,6 +325,7 @@
     y0: Math.min(r.y, r.y + r.height), y1: Math.max(r.y, r.y + r.height),
   });
   const mm = (pt) => (pt / MM).toFixed(1);
+  const cap = (t) => t[0].toUpperCase() + t.slice(1);
 
   // Common finished sizes (mm, portrait) used to spot files that already include bleed.
   const SIZES = { A3: [297, 420], A4: [210, 297], A5: [148, 210], A6: [105, 148], DL: [99, 210],
@@ -861,6 +871,7 @@
   /**
    * opts: { bleedMm, mode: 'mirror'|'stretch', sliverMm, marks, markOffsetMm,
    *         markLenMm, markWeightPt, imageDpi, useFileDpi, hideSeams,
+   *         keepBleed (true = use the PDF's own bleed when its TrimBox has enough on all sides),
    *         trimWMm, trimHMm (both > 0 = manual trim size, centred) }
    * kind: 'pdf' | 'png' | 'jpg'
    * Returns { bytes, pages: [{wMm, hMm}], warnings: [string] }
@@ -999,7 +1010,7 @@
         const noTrim = rawTrim ? 'the TrimBox is the same as the page (no trim set)' : 'no TrimBox';
         const rot = p.getRotation().angle || 0;
         const quarter = ((rot % 180) + 180) % 180 === 90;
-        let found = null, tooBig = false;
+        let found = null, tooBig = false, keep = false;
         const diag = {};
         if (custom) {
           // Manual size, as seen on screen, centred on the page's trim/crop area.
@@ -1031,7 +1042,18 @@
             (guess ? ` It looks like ${guess} already, so check it and set` : ' If that\'s wrong, set') + ' it under Trim size > Set size.');
         } else {
           const extra = Math.min(box.x0 - media.x0, box.y0 - media.y0, media.x1 - box.x1, media.y1 - box.y1);
-          if (extra < -0.3) warn(`${pn}the TrimBox extends beyond the page; the edges will be blank.`);
+          // The file's own bleed: the BleedBox (else CropBox, else MediaBox), within the page.
+          const bl = rect(p.getBleedBox());
+          const av = { x0: Math.max(bl.x0, crop.x0, media.x0), y0: Math.max(bl.y0, crop.y0, media.y0),
+            x1: Math.min(bl.x1, crop.x1, media.x1), y1: Math.min(bl.y1, crop.y1, media.y1) };
+          const own = [box.x0 - av.x0, box.y0 - av.y0, av.x1 - box.x1, av.y1 - box.y1];
+          const enough = own.map((v) => v >= b - 0.01);
+          if (opts.keepBleed === true && b > 0 && enough.every(Boolean)) {
+            keep = true;
+            warn(cap(`${pn}kept the file's own ${+opts.bleedMm.toFixed(2)} mm bleed.`));
+          } else if (opts.keepBleed === true && b > 0 && extra >= -0.3 && enough.some(Boolean)) {
+            warn(cap(`${pn}file has bleed on only some sides; mirrored bleed used instead.`));
+          } else if (extra < -0.3) warn(`${pn}the TrimBox extends beyond the page; the edges will be blank.`);
           else if (extra > 0.3) warn(`${pn}already has ${mm(extra)} mm or more beyond the trim; it is replaced by the new bleed.`);
         }
         if (!tooBig && (crop.x0 > box.x0 + 0.3 || crop.y0 > box.y0 + 0.3 || crop.x1 < box.x1 - 0.3 || crop.y1 < box.y1 - 0.3))
@@ -1067,7 +1089,7 @@
             ref = ctx.register(ctx.flateStream(concat(parts), form));
           }
         }
-        sources.push({ ref });
+        sources.push({ ref, keep });
         const s = sources[sources.length - 1];
         s.base = visualMatrix(box, rot);
         s.W = quarter ? th : tw;
@@ -1173,7 +1195,7 @@
     if (claims.length) warn(`Source is ${claims.join(' and ')}: claim kept; re-verify in Acrobat Preflight before sending.`);
     let version = std.version;
     // Transparency groups need PDF 1.4. Files that claim a standard keep their version.
-    if (version && hide && b > 0 && !claims.length && +version < 1.4 && sources.some((s) => s.ref)) version = '1.4';
+    if (version && hide && b > 0 && !claims.length && +version < 1.4 && sources.some((s) => s.ref && !s.keep)) version = '1.4';
     const objectStreams = !version || (+version >= 1.5 && !strict);
 
     const info = [];
@@ -1185,7 +1207,17 @@
       if (W + 2 * margin > 14400 || H + 2 * margin > 14400)
         warn('Page is larger than the 5.08 m PDF limit; some software will refuse it.');
 
-      if (s.ref) {
+      if (s.ref && s.keep) {
+        // The file's own bleed: the page drawn once, clipped to trim ± bleed. No pieces, no seams.
+        const name = page.node.newXObject('Art', s.ref);
+        page.pushOperators(
+          pushGraphicsState(),
+          rectangle(ox - b, oy - b, W + 2 * b, H + 2 * b), clip(), endPath(),
+          concatTransformationMatrix(...mul(s.base, [1, 0, 0, 1, ox, oy])),
+          drawObject(name),
+          popGraphicsState(),
+        );
+      } else if (s.ref) {
         const name = page.node.newXObject('Art', s.ref);
         // Bleed scale: mirror = 1:1 reflection; stretch = sliver scaled out to bleed width.
         const sliver = Math.max(0.01, (opts.sliverMm || 0.5) * MM);
@@ -1294,7 +1326,7 @@
 
   // ---- settings ----
   function readOpts() {
-    const o = { mode: document.querySelector('input[name=mode]:checked').value, marks: $('marks').checked, useFileDpi: $('useFileDpi').checked, hideSeams: $('hideSeams').checked };
+    const o = { mode: document.querySelector('input[name=mode]:checked').value, marks: $('marks').checked, useFileDpi: $('useFileDpi').checked, hideSeams: $('hideSeams').checked, keepBleed: $('keepBleed').checked };
     // An empty field reads as NaN so it fails checkOpts() instead of quietly becoming 0.
     for (const f of fields) o[f] = parseFloat($(f).value);
     if (trimSet()) { o.trimWMm = parseFloat($('trimW').value); o.trimHMm = parseFloat($('trimH').value); }
@@ -1321,7 +1353,7 @@
   // The W/H values are remembered, but every session starts on Auto so a
   // forgotten manual size can't be applied to the next day's files.
   function saveOpts() {
-    const o = readOpts(); o.v = 2; delete o.trimWMm; delete o.trimHMm;
+    const o = readOpts(); o.v = 3; delete o.trimWMm; delete o.trimHMm;
     o.trimW = $('trimW').value; o.trimH = $('trimH').value;
     try { localStorage.setItem(KEY, JSON.stringify(o)); } catch (e) {}
   }
@@ -1332,6 +1364,7 @@
     if (o.marks != null) $('marks').checked = o.marks;
     if (o.useFileDpi != null) $('useFileDpi').checked = o.useFileDpi;
     if (o.v >= 2 && o.hideSeams != null) $('hideSeams').checked = o.hideSeams;
+    if (o.v >= 3 && o.keepBleed != null) $('keepBleed').checked = o.keepBleed;
     if (o.trimW) $('trimW').value = o.trimW;
     if (o.trimH) $('trimH').value = o.trimH;
     const r = document.querySelector(`input[name=mode][value=${o.mode}]`); if (r) r.checked = true;
