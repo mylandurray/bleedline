@@ -1,0 +1,13 @@
+{
+  "name": "add-bleed",
+  "version": "1.0.0",
+  "description": "Add mirrored/stretched bleed and trim marks to artwork",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "type": "commonjs",
+  "devDependencies": {
+    "pdf-lib": "^1.17.1"
+  },
+  "private": true
+}
