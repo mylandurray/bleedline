@@ -72,6 +72,69 @@ A preflight check or a strict RIP will flag or reject the file.
   the wording should say "copied unchanged (recompressed losslessly)". Fonts, images and other resources really
   are byte-identical.
 
+## 5. Found on second pass (2026-10-09)
+
+Confirmed in Node unless noted.
+
+- **Typing a negative bleed cuts into the artwork (high).** `min="0"` isn't enforced on typed input and
+  `bleedMm: -3` runs without error: the output page is 283 × 383 pt for a 300 × 400 pt trim, so the TrimBox is
+  bigger than the page and the outer 3 mm of artwork is lost. Empty or invalid fields silently become 0
+  (`parseFloat(...) || 0`). **Fix:** validate every number in `addBleed` (throw on negative bleed, sliver ≤ 0,
+  NaN) and in the UI (red field, no processing). Warn when bleed is 0. In *Set size* mode with an empty W or H,
+  say so instead of silently falling back to Auto.
+- **Download can save the previous settings' output (high, UI).** Number inputs fire `change` on blur, and
+  reprocessing waits 150 ms. Typing a new bleed and clicking Download straight away blurs the field, then the
+  click downloads the old `entry.url` before reprocessing starts. Overlapping runs (a setting changed while a
+  file is still processing) can also finish out of order, so the older result wins. The header's "with bleed"
+  size uses the current setting, not the one the file was made with. **Fix:** on `input`/`change`, disable all
+  Download buttons immediately. Give each entry a run counter and drop results from stale runs. Store the
+  options used with each result and show those in the header.
+- **Reversed box corners (medium).** The spec allows `[urx ury llx lly]`, but pdf-lib's `asRectangle` doesn't
+  normalise it. A MediaBox of `[300 400 0 0]` gives a trim of −105.8 × −141.1 mm. **Fix:** normalise with
+  min/max in `rect()`, and refuse a box with zero area.
+- **Page content is stored twice (medium, file size).** `copier.copy(contents)` registers the raw streams, then
+  `PDFPageEmbedder` decodes them and writes a new Flate stream. The copied originals stay in the file unreferenced
+  (pdf-lib writes every object). A 10 KB source gave a 21 KB output. **Better fix than rewording #4:** build the
+  Form XObject directly from the source content stream. For a single stream, reuse its encoded bytes and `/Filter`
+  as they are (truly byte-for-byte). For an array of streams, concatenate decoded data as now. Don't copy
+  `Contents` through the copier.
+- **No trailer `/ID` (part of #3).** `PDFDocument.create()` sets no ID and the output has none. PDF/X-1a, X-3 and
+  X-4 all require one. Option A must add it (new random ID, or the source's first ID with a new second one).
+  The `%PDF-1.7` header also breaks a PDF/X-4 claim, not just X-1a and X-3.
+- **PDF/A claims (part of #3).** `pdfaid` in the XMP is copied the same way. Handle it like PDF/X: keep it only if
+  the output still conforms, otherwise strip it and warn. Also give the XMP a new `xmpMM:InstanceID`, so the output
+  doesn't claim to be the source file.
+- **The crop-mark budget doesn't fail safe (part of #1).** The audit says detection returns null on very large
+  content. In fact, when the 400,000-operator budget runs out, `run` returns early but `collectLines` still returns
+  the lines found so far, and `findCropMarks` uses them. **Fix:** return `[]` (or null) when the budget is hit.
+- **More crop-mark filters (part of #1).** `collectLines` ignores stroke width, colour, form `/BBox` clipping and
+  optional content. Lines in a hidden layer (`BDC /OC` with that layer OFF), lines clipped out by a form BBox, and
+  lines thicker than ~1 pt shouldn't count as marks. Real marks are usually registration or 100% K. A dieline drawn
+  as separate segments is the same failure as the table cell.
+- **Existing bleed is always thrown away (feature).** A file with a TrimBox and a real designer-made bleed of at
+  least the requested amount gets it replaced by a mirror. Add a *Keep existing bleed when it's big enough*
+  option (on by default) that uses the original artwork out to the bleed and only adds marks.
+- **Set size applies to every file in the session (UI).** A size set for file A is applied to file B when it's
+  dropped later. The warning shows, but it's easy to miss in a batch. Prefer per-file *Set size*, or switch back
+  to Auto when new files are added and say so.
+- **Smaller notes.**
+  - No warning when the TrimBox extends beyond the MediaBox, so the edges come out blank.
+  - Output pages bigger than 14,400 pt (5.08 m) exceed the PDF page limit, which matters for wide format. Warn.
+  - A greyscale PNG with transparency loses its grey ICC profile when it's converted to RGB. The warning should
+    say so.
+  - Arithmetic-coded (SOF9–SOF15) and 12-bit JPEGs are passed into DCTDecode, which many RIPs can't read.
+    Refuse them or warn.
+  - The comment at the top of `bleed.js` also says "byte-for-byte". Update it with the README and help.
+
+## 6. Rollout process
+
+- **Automated trim-area check.** There's no `npm test`. Add a Node script that runs a folder of sample files
+  through `addBleed` and renders the source trim and the output trim with Ghostscript at 300 dpi, then compares
+  them pixel by pixel (seam-hiding off). This replaces the manual Acrobat comparison in the checklist and stays
+  usable as a regression test.
+- **Build stamp.** Show the build date and commit in the help dialog, so it's possible to tell whether a
+  coworker's copy of `AddBleed.html` on the shared drive is current. After the fixes, replace every distributed copy.
+
 ## Verified OK (no change needed)
 
 - Page content is drawn directly (no group), clipped exactly to the trim. Blend modes, overprint, optional
@@ -84,7 +147,7 @@ A preflight check or a strict RIP will flag or reject the file.
 - PNGs without alpha or interlacing pass through losslessly, including 16-bit, greyscale and indexed images.
 - Encrypted, damaged, and `UserUnit` PDFs are refused.
 - Printable annotations are excluded, with a warning.
-- Crop-mark detection fails safe (returns null) on parse errors and on very large content.
+- Crop-mark detection fails safe (returns null) on parse errors. (Not on very large content: see #5.)
 
 ## Rollout checklist
 
@@ -92,7 +155,11 @@ A preflight check or a strict RIP will flag or reject the file.
 - [ ] #2 seam-hiding off by default (saved settings handled), help updated
 - [ ] #3 PDF/X handled (option A or B)
 - [ ] #4 small fixes
+- [ ] #5 input validation, stale-download fix, box normalisation, single content copy, PDF/X `/ID` and PDF/A,
+      crop-mark budget and filters
+- [ ] #5 optional: keep existing bleed, per-file Set size
+- [ ] #6 `npm test` trim-area comparison and build stamp
 - [ ] Rebuild `AddBleed.html`, then run a set of real customer files (with and without a TrimBox, crop marks,
-      rotated pages, PDF/X-1a, spot colours and overprint, layers, JPG/PNG) and compare each output's trim area
-      against the original in Acrobat Output Preview, or by diffing Ghostscript renders.
+      rotated pages, PDF/X-1a, spot colours and overprint, layers, JPG/PNG) through the #6 comparison, plus a
+      spot check in Acrobat Output Preview.
 - [ ] Set this plan to `status: done`.
