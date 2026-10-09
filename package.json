@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "Add mirrored/stretched bleed and trim marks to artwork",
   "scripts": {
-    "build": "node build.mjs"
+    "build": "node build.mjs",
+    "test": "node --test \"test/*.test.js\""
   },
   "type": "commonjs",
   "devDependencies": {
