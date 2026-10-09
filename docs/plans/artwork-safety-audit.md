@@ -151,15 +151,4 @@ Confirmed in Node unless noted.
 
 ## Rollout checklist
 
-- [ ] #1 crop-mark detection made strict, with a regression test
-- [ ] #2 seam-hiding off by default (saved settings handled), help updated
-- [ ] #3 PDF/X handled (option A or B)
-- [ ] #4 small fixes
-- [ ] #5 input validation, stale-download fix, box normalisation, single content copy, PDF/X `/ID` and PDF/A,
-      crop-mark budget and filters
-- [ ] #5 optional: keep existing bleed, per-file Set size
-- [ ] #6 `npm test` trim-area comparison and build stamp
-- [ ] Rebuild `AddBleed.html`, then run a set of real customer files (with and without a TrimBox, crop marks,
-      rotated pages, PDF/X-1a, spot colours and overprint, layers, JPG/PNG) through the #6 comparison, plus a
-      spot check in Acrobat Output Preview.
-- [ ] Set this plan to `status: done`.
+Moved to [artwork-safety-fixes.md](artwork-safety-fixes.md), which plans every fix above in build order.
