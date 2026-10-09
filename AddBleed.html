@@ -903,7 +903,7 @@
   const $ = (id) => document.getElementById(id);
   const fields = ['bleedMm', 'sliverMm', 'markOffsetMm', 'markLenMm', 'markWeightPt', 'imageDpi'];
   const KEY = 'addbleed.settings';
-  const files = []; // { file, kind, url, out, info, error, el }
+  const files = []; // { file, kind, url, urlRun, run, opts, pages, error, el }
   let selected = null;
 
   // ---- settings ----
@@ -977,7 +977,7 @@
   function addFiles(list) {
     for (const file of list) {
       const kind = kindOf(file);
-      const entry = { file, kind };
+      const entry = { file, kind, run: 0, urlRun: 0 };
       entry.el = document.createElement('div');
       entry.el.className = 'item';
       entry.el.innerHTML = '<span class="name"></span><span class="meta"></span><button class="primary dl" title="Download the PDF with bleed"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg>Download</button><button class="rm" title="Remove">✕</button><ul class="warn"></ul>';
@@ -1000,6 +1000,7 @@
     wl.replaceChildren();
     meta.className = 'meta';
     if (!entry.kind) { meta.textContent = 'Not a PDF/JPG/PNG'; meta.classList.add('err'); return; }
+    const run = ++entry.run; // a newer run makes this one stale
     const opts = readOpts();
     if (!checkOpts(opts)) {
       if (entry.url) URL.revokeObjectURL(entry.url);
@@ -1011,9 +1012,13 @@
     meta.textContent = 'Processing…';
     try {
       const bytes = new Uint8Array(await entry.file.arrayBuffer());
+      if (run !== entry.run) return;
       const res = await AddBleed.addBleed(PDFLib, bytes, entry.kind, opts);
+      if (run !== entry.run) return;
       if (entry.url) URL.revokeObjectURL(entry.url);
       entry.url = URL.createObjectURL(new Blob([res.bytes], { type: 'application/pdf' }));
+      entry.urlRun = run;
+      entry.opts = opts;
       const p = res.pages[0];
       const pages = res.pages.length > 1 ? ` · ${res.pages.length} pages` : '';
       meta.textContent = `Trim ${p.wMm.toFixed(1)} × ${p.hMm.toFixed(1)} mm${pages}`;
@@ -1022,8 +1027,10 @@
       entry.error = null;
       dl.disabled = false;
     } catch (err) {
+      if (run !== entry.run) return;
       console.error(err);
-      entry.url = null;
+      if (entry.url) URL.revokeObjectURL(entry.url);
+      entry.url = null; entry.pages = null;
       entry.error = err;
       meta.textContent = 'Failed: ' + (err.message || err);
       meta.classList.add('err');
@@ -1042,7 +1049,7 @@
     if (!entry || !entry.pages) { el.textContent = ''; return; }
     const f = (n) => n.toFixed(1).replace(/\.0$/, '');
     const size = (p, add) => `${f(p.wMm + add)} × ${f(p.hMm + add)} mm`;
-    const b = 2 * readOpts().bleedMm;
+    const b = 2 * entry.opts.bleedMm; // what the output was made with, not the live field
     const p = entry.pages[0];
     const mixed = entry.pages.some((q) => Math.abs(q.wMm - p.wMm) > 0.05 || Math.abs(q.hMm - p.hMm) > 0.05);
     const pages = entry.pages.length > 1 ? (mixed ? ` · page 1 of ${entry.pages.length} (sizes vary)` : ` · ${entry.pages.length} pages`) : '';
@@ -1060,7 +1067,7 @@
     $('preview').src = entry && entry.url ? entry.url + '#view=Fit' : 'about:blank';
   }
   function download(entry) {
-    if (!entry.url) return;
+    if (!entry.url || entry.run !== entry.urlRun) return; // never save output from older settings
     const a = document.createElement('a');
     a.href = entry.url; a.download = outName(entry.file.name);
     document.body.appendChild(a); a.click(); a.remove();
@@ -1070,6 +1077,17 @@
     entry.el.remove();
     if (entry.url) URL.revokeObjectURL(entry.url);
     if (selected === entry) select(files[0] || null);
+  }
+  // Called straight away on any edit: the current output no longer matches the
+  // settings, so it can't be downloaded until the re-run (after the debounce) finishes.
+  function markStale() {
+    for (const f of files) {
+      if (!f.kind) continue;
+      f.run++;
+      f.el.querySelector('button.dl').disabled = true;
+      const meta = f.el.querySelector('.meta');
+      meta.className = 'meta'; meta.textContent = 'Updating…';
+    }
   }
   async function reprocessAll() {
     for (const f of files) await process(f);
@@ -1084,13 +1102,15 @@
   document.addEventListener('drop', (e) => addFiles(e.dataTransfer.files));
 
   let timer;
-  document.querySelector('.side').addEventListener('change', (e) => {
+  const side = document.querySelector('.side');
+  side.addEventListener('input', () => { markStale(); checkOpts(); clearTimeout(timer); timer = setTimeout(reprocessAll, 150); });
+  side.addEventListener('change', (e) => {
     // Switching to Set size starts from the selected file's current trim.
     if (e.target.name === 'trim' && trimSet() && selected && selected.pages) {
       $('trimW').value = +selected.pages[0].wMm.toFixed(1);
       $('trimH').value = +selected.pages[0].hMm.toFixed(1);
     }
-    syncUi(); checkOpts(); saveOpts(); clearTimeout(timer); timer = setTimeout(reprocessAll, 150);
+    markStale(); syncUi(); checkOpts(); saveOpts(); clearTimeout(timer); timer = setTimeout(reprocessAll, 150);
   });
   $('redo').onclick = reprocessAll;
 
