@@ -5,7 +5,11 @@ Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
 
 - **Mirror** mode reflects the artwork edge into the bleed; **Stretch edge** stretches a thin edge sliver across it.
 - Stays vector: the original page is placed and redrawn flipped/stretched into each bleed strip, not rasterised.
-- Trim marks in registration colour; TrimBox and BleedBox set. Multi-page PDFs and page rotation supported.
+- Artwork is passed through untouched: PDF content, fonts and JPEG data are copied byte-for-byte, PNGs losslessly.
+  Layers, output intent, XMP, document info and transparency settings are carried over.
+- Trim marks in registration colour (separation `All`); TrimBox and BleedBox set. Multi-page PDFs and page rotation supported.
+- Warns about anything that needs a check (no TrimBox, existing bleed, printable annotations, layers, image dpi/profile)
+  and refuses password-protected or damaged PDFs.
 - Runs entirely in the browser, files never leave the PC. No install, no internet needed.
 
 ## Use
