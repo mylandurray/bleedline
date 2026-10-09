@@ -800,7 +800,7 @@
         // past their edge (side strips over the trim edge, corners over the sides),
         // so the outer SEAM pt of the trim shows the mirrored edge instead of the
         // original. With hideSeams off, every piece is clipped exactly instead.
-        const hide = opts.hideSeams !== false;
+        const hide = opts.hideSeams === true;
         const ov = hide ? SEAM : 0, g = 2 * ov;
         const pw = W + 2 * margin, ph = H + 2 * margin;
         const span = (side, o, len, ext) => (side < 0 ? [o - b, b + ext] : side > 0 ? [o + len - ext, b + ext] : [o, len]);

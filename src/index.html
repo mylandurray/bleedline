@@ -100,8 +100,8 @@
         </div>
         <label class="row" id="sliverRow"><span>Edge sliver (mm)</span><input type="number" id="sliverMm" min="0.05" step="0.1" value="0.5"></label>
         <p class="hint" id="modeHint"></p>
-        <label class="row"><span>Hide on-screen seams</span><input type="checkbox" id="hideSeams" checked></label>
-        <p class="hint">Stops viewers showing hairlines where bleed meets artwork. Covers the outer 0.26 mm of the trim with the mirrored edge. Untick to leave the trim untouched.</p>
+        <label class="row"><span>Hide on-screen seams</span><input type="checkbox" id="hideSeams"></label>
+        <p class="hint">Off: the trim area is exactly as supplied. On: hides hairlines some PDF viewers show where bleed meets artwork, by covering the outer 0.26 mm of the trim with the mirrored edge. For on-screen proofs.</p>
       </fieldset>
     </div>
     <div class="panel">
@@ -211,7 +211,7 @@
         Each time the page is opened it starts on <em>Auto</em>.</li>
     <li>The artwork should be <em>finished size with no bleed</em>. If a PDF already has bleed and a TrimBox,
         the existing bleed is replaced.</li>
-    <li><strong>Hide on-screen seams</strong> (on by default): PDF viewers draw a faint line wherever two
+    <li><strong>Hide on-screen seams</strong> (off by default): PDF viewers draw a faint line wherever two
         separately cut pieces of artwork meet, so a plain bleed shows hairlines along the trim on screen (they don't
         print). With this on, the bleed is painted over the outer 0.26 mm of the trim with a mirror of the edge, which
         removes the lines; at that width it is lost in normal trimming tolerance. Untick it if the trim area must stay
@@ -263,7 +263,7 @@
   // The W/H values are remembered, but every session starts on Auto so a
   // forgotten manual size can't be applied to the next day's files.
   function saveOpts() {
-    const o = readOpts(); delete o.trimWMm; delete o.trimHMm;
+    const o = readOpts(); o.v = 2; delete o.trimWMm; delete o.trimHMm;
     o.trimW = $('trimW').value; o.trimH = $('trimH').value;
     try { localStorage.setItem(KEY, JSON.stringify(o)); } catch (e) {}
   }
@@ -273,7 +273,7 @@
     for (const f of fields) if (o[f] != null) $(f).value = o[f];
     if (o.marks != null) $('marks').checked = o.marks;
     if (o.useFileDpi != null) $('useFileDpi').checked = o.useFileDpi;
-    if (o.hideSeams != null) $('hideSeams').checked = o.hideSeams;
+    if (o.v >= 2 && o.hideSeams != null) $('hideSeams').checked = o.hideSeams;
     if (o.trimW) $('trimW').value = o.trimW;
     if (o.trimH) $('trimH').value = o.trimH;
     const r = document.querySelector(`input[name=mode][value=${o.mode}]`); if (r) r.checked = true;

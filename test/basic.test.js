@@ -128,3 +128,30 @@ test('TrimBox bigger than the MediaBox warns', async () => {
   const r = await run(src, 'pdf', { marks: false });
   assert.ok(r.warnings.some((w) => /TrimBox extends beyond the page/.test(w)), r.warnings.join('|'));
 });
+
+async function hasTransparencyGroup(bytes) {
+  const doc = await PDFLib.PDFDocument.load(bytes, { updateMetadata: false });
+  const S = PDFLib.PDFName.of('S'), T = PDFLib.PDFName.of('Transparency');
+  for (const [, obj] of doc.context.enumerateIndirectObjects()) {
+    const d = obj instanceof PDFLib.PDFRawStream ? obj.dict : obj;
+    const g = d && d.lookup ? d.lookup(PDFLib.PDFName.of('Group')) : null;
+    if (g && g.get && g.get(S) === T) return true;
+  }
+  return false;
+}
+
+test('default options: centre clip is the TrimBox and no transparency group', async () => {
+  const trim = fx.mmRect(10, 10, 90, 60);
+  const src = await fx.page({ media: [120 * MM, 90 * MM], trim, content: fx.fill(trim, [1, 0, 0, 0]) });
+  const { hideSeams, ...defaults } = base;
+  const r = await addBleed(PDFLib, src, 'pdf', { ...defaults, marks: false });
+  await checkOutput(r.bytes, { trimMm: [90, 60], bleedMm: 3, source: src, exactCentreClip: true });
+  assert.equal(await hasTransparencyGroup(r.bytes), false);
+});
+
+test('hideSeams: true still adds transparency groups', async () => {
+  const trim = fx.mmRect(10, 10, 90, 60);
+  const src = await fx.page({ media: [120 * MM, 90 * MM], trim, content: fx.fill(trim, [1, 0, 0, 0]) });
+  const r = await run(src, 'pdf', { marks: false, hideSeams: true });
+  assert.equal(await hasTransparencyGroup(r.bytes), true);
+});
