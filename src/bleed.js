@@ -503,6 +503,85 @@
     return { x0, y0, x1, y1, score: top };
   }
 
+  // ---------- PDF/X, PDF/A and file identity ----------
+
+  // The document's XMP packet: null if there is none, { text: null } if it isn't readable UTF-8.
+  function readXmp(PDFLib, doc) {
+    const { PDFName, PDFRawStream, decodePDFRawStream } = PDFLib;
+    const s = doc.catalog.lookup(PDFName.of('Metadata'));
+    if (!(s instanceof PDFRawStream)) return null;
+    try {
+      const bytes = s.dict.get(PDFName.of('Filter')) ? decodePDFRawStream(s).decode() : s.getContents();
+      return { text: new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes) };
+    } catch (e) {
+      return { text: null };
+    }
+  }
+
+  // Value of an XMP property written as an element or an attribute.
+  function xmpField(xmp, name) {
+    const m = new RegExp(`${name}\\s*=\\s*["']([^"']*)["']|<${name}>([^<]*)</${name}>`).exec(xmp || '');
+    return m ? (m[1] !== undefined ? m[1] : m[2]).trim() : null;
+  }
+
+  // Which standards the source claims, and its PDF version (the header, or the catalog
+  // /Version when that is higher). { pdfx: '1a'|'3'|'4'|null, pdfa: number|null, version: 'M.m' }
+  function standardsOf(PDFLib, src) {
+    const { PDFName, PDFDict, PDFString, PDFHexString } = PDFLib;
+    const N = (s) => PDFName.of(s);
+    const xmp = (readXmp(PDFLib, src) || {}).text;
+    const info = src.context.lookup(src.context.trailerInfo.Info);
+    let x = null;
+    if (info instanceof PDFDict) {
+      const v = info.lookup(N('GTS_PDFXVersion'));
+      if (v instanceof PDFString || v instanceof PDFHexString) x = v.decodeText();
+    }
+    x = x || xmpField(xmp, 'pdfxid:GTS_PDFXVersion') || xmpField(xmp, 'pdfx:GTS_PDFXVersion');
+    const xn = x && /X-(\d)/i.exec(x);
+    // X-1a and X-3 (and the older X-1 / X-2) forbid transparency and object streams; X-4 and
+    // later allow both.
+    const pdfx = !xn ? null : +xn[1] <= 1 ? '1a' : +xn[1] <= 3 ? '3' : '4';
+    const part = parseInt(xmpField(xmp, 'pdfaid:part'), 10);
+    const pdfa = part > 0 ? part : null;
+    const h = src.context.header;
+    let version = `${h.major}.${h.minor}`;
+    const cv = src.catalog.get(N('Version'));
+    const cvs = cv instanceof PDFName ? cv.decodeText() : '';
+    if (/^\d\.\d$/.test(cvs) && +cvs > +version) version = cvs;
+    return { pdfx, pdfa, version };
+  }
+
+  // Set the XMP properties in `values` ({ name: value }). Each one present must be a single
+  // plain element or attribute; otherwise returns null so the caller leaves the XMP (and the
+  // matching Info entries) alone. Also null when none of them is present.
+  function editXmp(text, values) {
+    let out = text, changed = [];
+    for (const [name, v] of Object.entries(values)) {
+      const mentions = (out.match(new RegExp(`${name}\\b`, 'g')) || []).length;
+      if (!mentions) continue;
+      const el = new RegExp(`(<${name}>)[^<]*(</${name}>)`, 'g');
+      const at = new RegExp(`(\\s${name}\\s*=\\s*)(["'])[^"']*\\2`, 'g');
+      const ne = (out.match(el) || []).length, na = (out.match(at) || []).length;
+      if (ne + na !== 1 || 2 * ne + na !== mentions) return null;
+      out = ne ? out.replace(el, `$1${v}$2`) : out.replace(at, `$1$2${v}$2`);
+      changed.push(name);
+    }
+    return changed.length ? { text: out, changed } : null;
+  }
+
+  function randomBytes(n) {
+    const c = typeof crypto !== 'undefined' ? crypto : require('node:crypto').webcrypto;
+    return c.getRandomValues(new Uint8Array(n));
+  }
+  function randomUUID() {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) return crypto.randomUUID();
+    const b = randomBytes(16);
+    b[6] = (b[6] & 0x0f) | 0x40; b[8] = (b[8] & 0x3f) | 0x80;
+    const h = Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+    return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+  }
+  const toHex = (a) => Array.from(a, (x) => x.toString(16).padStart(2, '0')).join('');
+
   // ---------- main ----------
 
   // Plain-English checks on the numbers, so a bad value fails loudly instead of
@@ -537,7 +616,7 @@
     validateOpts(opts, kind);
     const {
       PDFDocument, PDFName, PDFNumber, PDFArray, PDFDict, PDFRawStream, decodePDFRawStream,
-      PDFObjectCopier, PDFOperator, pushGraphicsState, popGraphicsState, rectangle, clip,
+      PDFString, PDFHexString, PDFHeader, PDFObjectCopier, PDFOperator, pushGraphicsState, popGraphicsState, rectangle, clip,
       endPath, concatTransformationMatrix, drawObject, setLineWidth, moveTo, lineTo, stroke,
     } = PDFLib;
     const N = (s) => PDFName.of(s);
@@ -557,6 +636,9 @@
 
     // Sources: { ref (XObject or null for blank), base matrix, W, H, group }
     const sources = [];
+    // PDF sources: claimed standards and version. Images: no claim, pdf-lib's default 1.7.
+    let std = { pdfx: null, pdfa: null, version: null };
+    let firstId = null; // the source's permanent ID, kept as the first half of the output's /ID
 
     if (kind === 'pdf') {
       let src;
@@ -572,13 +654,40 @@
       // One copier for the whole job so shared objects (layers, fonts) stay shared.
       const copier = PDFObjectCopier.for(src.context, ctx);
 
+      std = standardsOf(PDFLib, src);
+      const id = src.context.lookup(src.context.trailerInfo.ID);
+      const id0 = id instanceof PDFArray && id.size() ? id.lookup(0) : null;
+      if ((id0 instanceof PDFHexString || id0 instanceof PDFString) && id0.asBytes().length) firstId = id0.asBytes();
+
       // Document-level things that affect how the artwork prints.
-      for (const key of ['OCProperties', 'OutputIntents', 'Metadata']) {
+      for (const key of ['OCProperties', 'OutputIntents']) {
         const v = src.catalog.get(N(key));
         if (v) out.catalog.set(N(key), copier.copy(v));
       }
       const srcInfo = src.context.lookup(src.context.trailerInfo.Info);
-      if (srcInfo instanceof PDFDict) ctx.trailerInfo.Info = ctx.register(copier.copy(srcInfo));
+      const outInfo = srcInfo instanceof PDFDict ? copier.copy(srcInfo) : null;
+      if (outInfo) ctx.trailerInfo.Info = ctx.register(outInfo);
+
+      // XMP and Info: this is a new file, so it gets a new InstanceID and modification date.
+      // Both are changed together or not at all, so they never disagree (PDF/A checks this).
+      const meta = src.catalog.get(N('Metadata'));
+      const now = new Date().toISOString().slice(0, 19); // UTC, YYYY-MM-DDTHH:mm:ss
+      const xmp = meta ? readXmp(PDFLib, src) : null;
+      const edited = xmp && xmp.text != null ? editXmp(xmp.text, {
+        'xmpMM:InstanceID': 'uuid:' + randomUUID(),
+        'xmp:MetadataDate': now + '+00:00',
+        'xmp:ModifyDate': now + '+00:00',
+      }) : null;
+      if (edited) {
+        // Unfiltered: PDF/A-1 doesn't allow filters on metadata.
+        const s = ctx.stream(new TextEncoder().encode(edited.text), { Type: 'Metadata', Subtype: 'XML' });
+        out.catalog.set(N('Metadata'), ctx.register(s));
+      } else if (meta) {
+        out.catalog.set(N('Metadata'), copier.copy(meta));
+      }
+      if (outInfo && (!meta || (edited && edited.changed.includes('xmp:ModifyDate')))) {
+        outInfo.set(N('ModDate'), PDFString.of(`D:${now.replace(/[-T:]/g, '')}+00'00'`));
+      }
 
       // Layer report.
       const ocp = src.catalog.lookupMaybe(N('OCProperties'), PDFDict);
@@ -790,6 +899,20 @@
       regCS = ctx.register(ctx.obj([N('Separation'), N('All'), N('DeviceCMYK'), fn]));
     }
 
+    // Standards rules (see standardsOf): keep the source's version and claim valid.
+    const claims = [std.pdfx && `PDF/X-${std.pdfx}`, std.pdfa && `PDF/A-${std.pdfa}`].filter(Boolean);
+    const strict = std.pdfx === '1a' || std.pdfx === '3' || std.pdfa === 1; // no transparency, no object streams
+    let hide = opts.hideSeams === true;
+    if (hide && strict) {
+      hide = false;
+      warn(`Seam hiding skipped to keep the file ${claims.join(' / ')} valid.`);
+    }
+    if (claims.length) warn(`Source is ${claims.join(' and ')}: claim kept; re-verify in Acrobat Preflight before sending.`);
+    let version = std.version;
+    // Transparency groups need PDF 1.4. Files that claim a standard keep their version.
+    if (version && hide && b > 0 && !claims.length && +version < 1.4 && sources.some((s) => s.ref)) version = '1.4';
+    const objectStreams = !version || (+version >= 1.5 && !strict);
+
     const info = [];
     for (const s of sources) {
       const { W, H } = s;
@@ -812,7 +935,6 @@
         // past their edge (side strips over the trim edge, corners over the sides),
         // so the outer SEAM pt of the trim shows the mirrored edge instead of the
         // original. With hideSeams off, every piece is clipped exactly instead.
-        const hide = opts.hideSeams === true;
         const ov = hide ? SEAM : 0, g = 2 * ov;
         const pw = W + 2 * margin, ph = H + 2 * margin;
         const span = (side, o, len, ext) => (side < 0 ? [o - b, b + ext] : side > 0 ? [o + len - ext, b + ext] : [o, len]);
@@ -875,7 +997,21 @@
       return N('Reg');
     }
 
-    return { bytes: await out.save(), pages: info, warnings };
+    // Trailer /ID: the source's permanent ID (or a new one) and a new changing ID.
+    ctx.trailerInfo.ID = ctx.obj([PDFHexString.of(toHex(firstId || randomBytes(16))), PDFHexString.of(toHex(randomBytes(16)))]);
+
+    const setVersion = version && /^\d\.\d$/.test(version);
+    if (setVersion) out.context.header = PDFHeader.forVersion(+version[0], +version[2]);
+    const bytes = await out.save({ useObjectStreams: objectStreams });
+    const head = String.fromCharCode(...bytes.subarray(0, 8));
+    if (setVersion && head !== `%PDF-${version}`) {
+      // pdf-lib's writers always print %PDF-1.7 (they ignore context.header), so patch the
+      // two digits in place; the length doesn't change, so every offset stays valid.
+      if (head !== '%PDF-1.7') throw new Error('Unexpected PDF header from pdf-lib: ' + head);
+      bytes[5] = version.charCodeAt(0);
+      bytes[7] = version.charCodeAt(2);
+    }
+    return { bytes, pages: info, warnings };
   }
 
   const api = { addBleed, validateOpts, MM, parseJpeg, parsePng, findCropMarks };

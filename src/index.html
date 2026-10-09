@@ -190,7 +190,11 @@
         software and preflight pick up the trim correctly.</li>
     <li>Artwork is untouched: the original page content, fonts and images are copied as they are, not rasterised or
         re-compressed. With <em>Hide on-screen seams</em> off, nothing inside the trim changes at all.</li>
-    <li>Output intent (PDF/X profile), XMP metadata, document info, transparency settings and layers are carried over.</li>
+    <li>Output intent (PDF/X profile), XMP metadata, document info, transparency settings and layers are carried over.
+        The XMP gets a new instance ID and modification date, since the output is a new file.</li>
+    <li>PDF/X and PDF/A files keep their claim: the output keeps the source's PDF version, and for PDF/X-1a, PDF/X-3
+        and PDF/A-1 it is saved without object streams or transparency. You'll get a warning to re-verify the file in
+        Acrobat Preflight before sending it, because AddBleed can't fully check conformance itself.</li>
     <li>Trim marks are drawn in registration colour (separation <em>All</em>, so they print on every plate including
         spots), outside the bleed.</li>
   </ul>
@@ -215,7 +219,8 @@
         separately cut pieces of artwork meet, so a plain bleed shows hairlines along the trim on screen (they don't
         print). With this on, the bleed is painted over the outer 0.26 mm of the trim with a mirror of the edge, which
         removes the lines; at that width it is lost in normal trimming tolerance. Untick it if the trim area must stay
-        exactly as supplied.</li>
+        exactly as supplied. It is skipped (with a warning) for PDF/X-1a, PDF/X-3 and PDF/A-1 files, which don't
+        allow the transparency it uses.</li>
     <li>Images are placed at the dpi saved in the file (or the dpi setting if there isn't one), turned to match the
         camera orientation tag, and keep their embedded colour profile. JPEG data is embedded unchanged; PNGs are
         embedded losslessly (greyscale, 16-bit and indexed stay as they are). PNGs with transparency are decoded to
