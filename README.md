@@ -7,7 +7,8 @@ Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
 
 - **Mirror** mode reflects the artwork edge into the bleed; **Stretch edge** stretches a thin edge sliver across it.
 - Stays vector: the original page is placed and redrawn flipped/stretched into each bleed strip, not rasterised.
-- Artwork is passed through untouched: PDF content, fonts and JPEG data are copied byte-for-byte, PNGs losslessly.
+- PDF page content, fonts and images are copied unchanged (byte-for-byte for single-stream pages; multi-part page
+  content is joined and recompressed losslessly). JPEG data is embedded as is, PNGs losslessly.
   Layers, output intent, XMP, document info and transparency settings are carried over.
 - PDF/X and PDF/A files keep their claim: the output keeps the source's PDF version, and for PDF/X-1a, X-3 and
   PDF/A-1 it uses no object streams or transparency. A warning reminds you to re-verify in Acrobat Preflight.

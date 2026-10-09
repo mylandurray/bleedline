@@ -2,8 +2,10 @@
 // Works in the browser (PDFLib global) and in Node (pass the pdf-lib module).
 // Everything stays vector: the original page is copied once as a Form XObject
 // and redrawn flipped/stretched into each bleed strip, clipped to that strip.
-// The artwork itself is never re-encoded: PDF content streams, JPEG data and
-// (where possible) PNG data are passed through byte-for-byte.
+// PDF page content, fonts and images are copied unchanged (byte-for-byte for
+// single-stream pages; multi-part page content is joined and recompressed
+// losslessly). JPEG data is embedded as is; PNG data is passed through where
+// possible and otherwise re-compressed losslessly.
 
 (function (root) {
   const MM = 72 / 25.4;
@@ -117,7 +119,7 @@
       } else if (m === 0xee && ascii(d, s, 5) === 'Adobe') {
         r.adobe = true;
       } else if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) {
-        r.bpc = d[s]; r.height = u16(d, s + 1); r.width = u16(d, s + 3); r.comps = d[s + 5];
+        r.sof = m; r.bpc = d[s]; r.height = u16(d, s + 1); r.width = u16(d, s + 3); r.comps = d[s + 5];
       }
       i += 2 + len;
     }
@@ -623,12 +625,15 @@
 
     const b = opts.bleedMm * MM;
     const marks = opts.marks;
-    const markOff = opts.markOffsetMm * MM;
+    // Marks may not sit inside the bleed, or they would be printed on the artwork.
+    const markOff = marks ? Math.max(opts.markOffsetMm * MM, b) : opts.markOffsetMm * MM;
     const markLen = opts.markLenMm * MM;
     const margin = marks ? Math.max(b, markOff + markLen) + 2 * MM : b;
     const warnings = [];
     const warn = (w) => { if (!warnings.includes(w)) warnings.push(w); };
     if (opts.bleedMm === 0) warn('No bleed added (bleed is 0 mm).');
+    if (marks && opts.markOffsetMm * MM < b - 1e-6)
+      warn(`Trim marks moved out to the bleed edge (offset ${+opts.markOffsetMm.toFixed(2)} → ${+opts.bleedMm.toFixed(2)} mm).`);
     const custom = opts.trimWMm > 0 && opts.trimHMm > 0 ? { w: opts.trimWMm * MM, h: opts.trimHMm * MM } : null;
 
     const out = await PDFDocument.create({ updateMetadata: false });
@@ -738,7 +743,9 @@
         }
         const same = (r, q) => ['x0', 'y0', 'x1', 'y1'].every((key) => Math.abs(r[key] - q[key]) < 0.3);
         // A TrimBox equal to the page is what many exports write when nobody set one.
-        const hasTrim = !!node.get(N('TrimBox')) && !same(box, media);
+        const rawTrim = !!node.get(N('TrimBox'));
+        const hasTrim = rawTrim && !same(box, media);
+        const noTrim = rawTrim ? 'the TrimBox is the same as the page (no trim set)' : 'no TrimBox';
         const rot = p.getRotation().angle || 0;
         const quarter = ((rot % 180) + 180) % 180 === 90;
         let found = null, tooBig = false;
@@ -755,7 +762,7 @@
           try { found = findCropMarks(PDFLib, p, media, diag); } catch (e) { found = null; diag.reason = 'unreadable'; }
           if (found) {
             box = { x0: found.x0, y0: found.y0, x1: found.x1, y1: found.y1 };
-            warn(`${pn}no TrimBox; trim of ${mm(box.x1 - box.x0)} × ${mm(box.y1 - box.y0)} mm found from the crop marks on the page` +
+            warn(`${pn}${noTrim}; trim of ${mm(box.x1 - box.x0)} × ${mm(box.y1 - box.y0)} mm found from the crop marks on the page` +
               (found.score < 8 ? ` (${found.score} of 8 marks).` : '.'));
           }
         }
@@ -765,10 +772,10 @@
         } else if (!hasTrim) {
           const guess = looksLikeBleed(tw / MM, th / MM);
           const why = {
-            complex: 'no TrimBox, and the page is too complex to check for crop marks',
-            unreadable: "no TrimBox, and the page content couldn't be read to check for crop marks",
-            ambiguous: 'no TrimBox, and found more than one possible set of crop marks (set the trim size by hand)',
-          }[diag.reason] || 'no TrimBox or crop marks';
+            complex: `${noTrim}, and the page is too complex to check for crop marks`,
+            unreadable: `${noTrim}, and the page content couldn't be read to check for crop marks`,
+            ambiguous: `${noTrim}, and found more than one possible set of crop marks (set the trim size by hand)`,
+          }[diag.reason] || (rawTrim ? `${noTrim}, and there are no crop marks` : 'no TrimBox or crop marks');
           warn(`${pn}${why}, so the page size (${mm(tw)} × ${mm(th)} mm) is used as the trim.` +
             (guess ? ` It looks like ${guess} already, so check it and set` : ' If that\'s wrong, set') + ' it under Trim size > Set size.');
         } else {
@@ -847,6 +854,8 @@
     // JPEG: the compressed data goes in unchanged.
     function embedJpeg(bytes) {
       const j = parseJpeg(bytes);
+      if ((j.sof >= 0xc9 && j.sof <= 0xcf) || j.bpc === 12)
+        throw new Error("Arithmetic-coded or 12-bit JPEG isn't supported by most RIPs; re-save it as a normal JPEG.");
       const dev = j.comps === 4 ? 'DeviceCMYK' : j.comps === 1 ? 'DeviceGray' : 'DeviceRGB';
       const dict = {
         Type: 'XObject', Subtype: 'Image', Width: j.width, Height: j.height,
@@ -883,8 +892,11 @@
       // Fallback: pdf-lib decodes to 8-bit RGB + alpha mask.
       const img = await out.embedPng(bytes);
       await img.embed();
-      if (p.bitDepth === 16) warn('16-bit PNG with transparency was reduced to 8-bit.');
-      if (p.colorType === 0 || p.colorType === 4) warn('Greyscale PNG with transparency was converted to RGB (will print 4-colour).');
+      const why = [hasAlpha && 'with transparency', p.interlace && 'interlaced'].filter(Boolean).join(', ');
+      if (p.bitDepth === 16) warn(`16-bit PNG (${why}) was reduced to 8-bit.`);
+      if (p.colorType === 0 || p.colorType === 4)
+        warn(`Greyscale PNG (${why}) was converted to RGB (will print 4-colour)` +
+          (p.iccZ ? '; its greyscale colour profile was dropped.' : '.'));
       if (p.interlace) warn('Interlaced PNG was decoded and re-compressed (pixels unchanged).');
       if (p.iccZ && p.colorType !== 0 && p.colorType !== 4) {
         ctx.lookup(img.ref).dict.set(N('ColorSpace'), iccStream(p.iccZ, 3, true));
@@ -919,6 +931,8 @@
       const page = out.addPage([W + 2 * margin, H + 2 * margin]);
       if (s.group) page.node.set(N('Group'), s.group);
       const ox = margin, oy = margin;
+      if (W + 2 * margin > 14400 || H + 2 * margin > 14400)
+        warn('Page is larger than the 5.08 m PDF limit; some software will refuse it.');
 
       if (s.ref) {
         const name = page.node.newXObject('Art', s.ref);

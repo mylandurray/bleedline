@@ -57,7 +57,7 @@ test('A5 table of 80 x 40 pt cells, TrimBox = MediaBox (audit repro): page size'
   await fallsBack({
     media, trim: fx.rect(0, 0, media[0], media[1]),
     content: fx.table(10, 17.6, 5, 14, 80, 40),
-  }, [148, 210]);
+  }, [148, 210], /TrimBox is the same as the page (no trim set), and there are no crop marks/);
 });
 
 test('same table on a page that also has real crop marks: the crop-mark trim', async () => {

@@ -192,19 +192,25 @@ function pngChunk(type, data) {
   return Buffer.concat([len, body, crc]);
 }
 
-/** Opaque RGB or RGBA (alpha:true) PNG. dpi > 0 adds a pHYs chunk. */
-function png({ width = 40, height = 30, alpha = false, dpi = 0, pixel = (x, y) => [(x * 6) % 256, (y * 8) % 256, 128] } = {}) {
-  const ch = alpha ? 4 : 3, stride = width * ch + 1;
+/**
+ * Opaque RGB or RGBA (alpha:true) PNG; grey:true makes grey / grey+alpha. dpi > 0 adds a pHYs chunk,
+ * iccp:true an iCCP chunk (junk profile, never read by the tests). interlace:true sets the Adam7 flag
+ * and is only valid for 1 x 1 images (one pass holds the single pixel).
+ */
+function png({ width = 40, height = 30, alpha = false, grey = false, interlace = false, iccp = false, dpi = 0, pixel = (x, y) => [(x * 6) % 256, (y * 8) % 256, 128] } = {}) {
+  if (interlace && (width !== 1 || height !== 1)) throw new Error('interlaced fixture is 1 x 1 only');
+  const ch = (grey ? 1 : 3) + (alpha ? 1 : 0), stride = width * ch + 1;
   const raw = Buffer.alloc(stride * height);
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const p = pixel(x, y);
-      for (let c = 0; c < ch; c++) raw[y * stride + 1 + x * ch + c] = c === 3 ? (p[3] ?? 255) : p[c];
+      for (let c = 0; c < ch; c++) raw[y * stride + 1 + x * ch + c] = c === ch - 1 && alpha ? (p[3] ?? 255) : p[c];
     }
   }
   const ihdr = Buffer.alloc(13);
-  ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = alpha ? 6 : 2;
+  ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = grey ? (alpha ? 4 : 0) : (alpha ? 6 : 2); ihdr[12] = interlace ? 1 : 0;
   const chunks = [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), pngChunk('IHDR', ihdr)];
+  if (iccp) chunks.push(pngChunk('iCCP', Buffer.concat([Buffer.from('prof\0\0'), zlib.deflateSync(Buffer.alloc(128))])));
   if (dpi) {
     const p = Buffer.alloc(9), ppm = Math.round(dpi / 0.0254);
     p.writeUInt32BE(ppm, 0); p.writeUInt32BE(ppm, 4); p[8] = 1;
@@ -219,12 +225,12 @@ function png({ width = 40, height = 30, alpha = false, dpi = 0, pixel = (x, y) =
  * passes JPEG data through untouched and only reads the header, so it is enough for structural
  * tests. comps is 1, 3 or 4; dpi writes the JFIF density.
  */
-function jpg({ width = 40, height = 30, comps = 3, dpi = 0 } = {}) {
+function jpg({ width = 40, height = 30, comps = 3, dpi = 0, sof = 0xc0, bpc = 8 } = {}) {
   const u16 = (v) => [(v >> 8) & 255, v & 255];
   const b = [0xff, 0xd8, 0xff, 0xe0, ...u16(16), 0x4a, 0x46, 0x49, 0x46, 0, 1, 1, dpi ? 1 : 0, ...u16(dpi || 1), ...u16(dpi || 1), 0, 0];
-  const sof = [8, ...u16(height), ...u16(width), comps];
-  for (let i = 1; i <= comps; i++) sof.push(i, 0x11, 0);
-  b.push(0xff, 0xc0, ...u16(sof.length + 2), ...sof);
+  const sofData = [bpc, ...u16(height), ...u16(width), comps];
+  for (let i = 1; i <= comps; i++) sofData.push(i, 0x11, 0);
+  b.push(0xff, sof, ...u16(sofData.length + 2), ...sofData);
   b.push(0xff, 0xda, ...u16(2 + 1 + comps * 2 + 3), comps);
   for (let i = 1; i <= comps; i++) b.push(i, 0);
   b.push(0, 63, 0, 0x00, 0xff, 0xd9);
