@@ -58,3 +58,52 @@ test('PNG with alpha (decode path)', async () => {
   const r = await run(fx.png({ width: 300, height: 150, alpha: true }), 'png', { useFileDpi: false, imageDpi: 150, marks: false });
   await checkOutput(r.bytes, { trimMm: [50.8, 25.4], bleedMm: 3, pages: 1 });
 });
+
+// ---------- option validation (phase 1a) ----------
+
+const assert = require('node:assert/strict');
+const simple = () => fx.page({ media: [100 * MM, 70 * MM], content: fx.fill(fx.mmRect(0, 0, 100, 70), [0, 0, 0, 0.8]) });
+
+test('negative bleed throws', async () => {
+  await assert.rejects(run(await simple(), 'pdf', { bleedMm: -3 }), /Bleed must be/);
+});
+
+test('NaN bleed throws', async () => {
+  await assert.rejects(run(await simple(), 'pdf', { bleedMm: NaN }), /Bleed must be/);
+});
+
+test('bleed over 50 mm throws', async () => {
+  await assert.rejects(run(await simple(), 'pdf', { bleedMm: 51 }), /Bleed must be/);
+});
+
+test('0 bleed works and warns', async () => {
+  const src = await simple();
+  const r = await run(src, 'pdf', { bleedMm: 0, marks: false });
+  assert.ok(r.warnings.some((w) => /No bleed added/.test(w)), r.warnings.join('|'));
+  await checkOutput(r.bytes, { trimMm: [100, 70], bleedMm: 0, source: src });
+});
+
+test('stretch with a 0 sliver throws', async () => {
+  await assert.rejects(run(await simple(), 'pdf', { mode: 'stretch', sliverMm: 0 }), /sliver/i);
+});
+
+test('mark settings are only checked when marks are on', async () => {
+  const src = await simple();
+  await assert.rejects(run(src, 'pdf', { markLenMm: 0 }), /Mark length/);
+  await assert.rejects(run(src, 'pdf', { markWeightPt: NaN }), /Line weight/);
+  await assert.rejects(run(src, 'pdf', { markOffsetMm: -1 }), /Offset/);
+  await run(src, 'pdf', { marks: false, markLenMm: 0 });
+});
+
+test('image dpi must be positive (images only)', async () => {
+  await assert.rejects(run(fx.png(), 'png', { imageDpi: 0 }), /dpi/);
+  await run(await simple(), 'pdf', { imageDpi: NaN });
+});
+
+test('half-filled or non-positive trim W/H throws', async () => {
+  const src = await simple();
+  await assert.rejects(run(src, 'pdf', { trimWMm: 50 }), /both/);
+  await assert.rejects(run(src, 'pdf', { trimWMm: 50, trimHMm: NaN }), /Trim width and height/);
+  await assert.rejects(run(src, 'pdf', { trimWMm: 0, trimHMm: 50 }), /Trim width and height/);
+  await assert.rejects(run(src, 'pdf', { trimWMm: -5, trimHMm: 50 }), /Trim width and height/);
+});

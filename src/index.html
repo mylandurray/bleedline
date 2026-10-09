@@ -38,6 +38,7 @@
   label.row .pair input { width: 62px; }
   input[type=number] { width: 80px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px;
     background: var(--bg); color: var(--ink); font: inherit; text-align: right; }
+  input.bad { border-color: var(--err); outline: 1px solid var(--err); }
   .seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
   .seg label { flex: 1; text-align: center; padding: 5px 0; cursor: pointer; }
   .seg input { display: none; }
@@ -159,7 +160,8 @@
     <li>Drop one or more PDF, JPG or PNG files on the drop area (or click it).</li>
     <li>Each file is processed straight away and shown in the preview. Click <strong>Download</strong> to save
         <em>name</em>_bleed.pdf. Click a file in the list to preview it.</li>
-    <li>Changing a setting re-processes all loaded files.</li>
+    <li>Changing a setting re-processes all loaded files. A setting that isn't valid (empty, negative, or zero where it
+        must be more) is outlined in red and nothing is processed until it's fixed.</li>
   </ol>
   <h3>Bleed modes</h3>
   <ul>
@@ -227,9 +229,27 @@
   // ---- settings ----
   function readOpts() {
     const o = { mode: document.querySelector('input[name=mode]:checked').value, marks: $('marks').checked, useFileDpi: $('useFileDpi').checked, hideSeams: $('hideSeams').checked };
-    for (const f of fields) o[f] = parseFloat($(f).value) || 0;
-    if (trimSet()) { o.trimWMm = parseFloat($('trimW').value) || 0; o.trimHMm = parseFloat($('trimH').value) || 0; }
+    // An empty field reads as NaN so it fails checkOpts() instead of quietly becoming 0.
+    for (const f of fields) o[f] = parseFloat($(f).value);
+    if (trimSet()) { o.trimWMm = parseFloat($('trimW').value); o.trimHMm = parseFloat($('trimH').value); }
     return o;
+  }
+  // Mirrors validateOpts() in bleed.js, but marks each bad field. Returns true if all are fine.
+  function checkOpts(o = readOpts()) {
+    const ok = (v, min, max, inclusive) => Number.isFinite(v) && (inclusive ? v >= min : v > min) && (max == null || v <= max);
+    const rules = {
+      bleedMm: ok(o.bleedMm, 0, 50, true),
+      sliverMm: o.mode !== 'stretch' || ok(o.sliverMm, 0),
+      markOffsetMm: !o.marks || ok(o.markOffsetMm, 0, null, true),
+      markLenMm: !o.marks || ok(o.markLenMm, 0),
+      markWeightPt: !o.marks || ok(o.markWeightPt, 0),
+      imageDpi: ok(o.imageDpi, 0),
+      trimW: !trimSet() || ok(o.trimWMm, 0),
+      trimH: !trimSet() || ok(o.trimHMm, 0),
+    };
+    let all = true;
+    for (const [id, good] of Object.entries(rules)) { $(id).classList.toggle('bad', !good); if (!good) all = false; }
+    return all;
   }
   const trimSet = () => document.querySelector('input[name=trim]:checked').value === 'set';
   // The W/H values are remembered, but every session starts on Auto so a
@@ -300,10 +320,18 @@
     wl.replaceChildren();
     meta.className = 'meta';
     if (!entry.kind) { meta.textContent = 'Not a PDF/JPG/PNG'; meta.classList.add('err'); return; }
+    const opts = readOpts();
+    if (!checkOpts(opts)) {
+      if (entry.url) URL.revokeObjectURL(entry.url);
+      entry.url = null; entry.pages = null;
+      meta.textContent = 'Fix the highlighted setting'; meta.classList.add('err');
+      if (selected === entry) showPreview(entry);
+      return;
+    }
     meta.textContent = 'Processing…';
     try {
       const bytes = new Uint8Array(await entry.file.arrayBuffer());
-      const res = await AddBleed.addBleed(PDFLib, bytes, entry.kind, readOpts());
+      const res = await AddBleed.addBleed(PDFLib, bytes, entry.kind, opts);
       if (entry.url) URL.revokeObjectURL(entry.url);
       entry.url = URL.createObjectURL(new Blob([res.bytes], { type: 'application/pdf' }));
       const p = res.pages[0];
@@ -382,7 +410,7 @@
       $('trimW').value = +selected.pages[0].wMm.toFixed(1);
       $('trimH').value = +selected.pages[0].hMm.toFixed(1);
     }
-    syncUi(); saveOpts(); clearTimeout(timer); timer = setTimeout(reprocessAll, 150);
+    syncUi(); checkOpts(); saveOpts(); clearTimeout(timer); timer = setTimeout(reprocessAll, 150);
   });
   $('redo').onclick = reprocessAll;
 
@@ -393,7 +421,7 @@
     if (e.key === 'F1' || (e.key === '?' && !/INPUT/.test(e.target.tagName))) { e.preventDefault(); help.showModal(); }
   });
 
-  loadOpts(); syncUi();
+  loadOpts(); syncUi(); checkOpts();
 })();
 </script>
 </body>

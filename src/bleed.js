@@ -308,6 +308,27 @@
 
   // ---------- main ----------
 
+  // Plain-English checks on the numbers, so a bad value fails loudly instead of
+  // silently cutting the artwork or producing a broken page.
+  function validateOpts(opts, kind) {
+    const bad = (m) => { throw new Error(m); };
+    const num = (v) => typeof v === 'number' && Number.isFinite(v);
+    if (!num(opts.bleedMm) || opts.bleedMm < 0 || opts.bleedMm > 50) bad('Bleed must be a number from 0 to 50 mm.');
+    if (opts.mode === 'stretch' && !(num(opts.sliverMm) && opts.sliverMm > 0)) bad('Edge sliver must be more than 0 mm.');
+    if (opts.marks) {
+      if (!(num(opts.markLenMm) && opts.markLenMm > 0)) bad('Mark length must be more than 0 mm.');
+      if (!(num(opts.markWeightPt) && opts.markWeightPt > 0)) bad('Line weight must be more than 0 pt.');
+      if (!(num(opts.markOffsetMm) && opts.markOffsetMm >= 0)) bad('Offset from trim must be 0 mm or more.');
+    }
+    if (kind !== 'pdf' && !(num(opts.imageDpi) && opts.imageDpi > 0)) bad('Image dpi must be more than 0.');
+    const given = (v) => v !== undefined && v !== null;
+    if (given(opts.trimWMm) || given(opts.trimHMm)) {
+      if (!(given(opts.trimWMm) && given(opts.trimHMm))) bad('Set both the trim width and height, or neither.');
+      if (!(num(opts.trimWMm) && opts.trimWMm > 0 && num(opts.trimHMm) && opts.trimHMm > 0))
+        bad('Trim width and height must both be more than 0 mm.');
+    }
+  }
+
   /**
    * opts: { bleedMm, mode: 'mirror'|'stretch', sliverMm, marks, markOffsetMm,
    *         markLenMm, markWeightPt, imageDpi, useFileDpi, hideSeams,
@@ -316,6 +337,7 @@
    * Returns { bytes, pages: [{wMm, hMm}], warnings: [string] }
    */
   async function addBleed(PDFLib, srcBytes, kind, opts) {
+    validateOpts(opts, kind);
     const {
       PDFDocument, PDFName, PDFNumber, PDFArray, PDFDict, PDFPageLeaf, PDFPageEmbedder,
       PDFObjectCopier, PDFOperator, pushGraphicsState, popGraphicsState, rectangle, clip,
@@ -330,6 +352,7 @@
     const margin = marks ? Math.max(b, markOff + markLen) + 2 * MM : b;
     const warnings = [];
     const warn = (w) => { if (!warnings.includes(w)) warnings.push(w); };
+    if (opts.bleedMm === 0) warn('No bleed added (bleed is 0 mm).');
     const custom = opts.trimWMm > 0 && opts.trimHMm > 0 ? { w: opts.trimWMm * MM, h: opts.trimHMm * MM } : null;
 
     const out = await PDFDocument.create({ updateMetadata: false });
@@ -635,7 +658,7 @@
     return { bytes: await out.save(), pages: info, warnings };
   }
 
-  const api = { addBleed, MM, parseJpeg, parsePng, findCropMarks };
+  const api = { addBleed, validateOpts, MM, parseJpeg, parsePng, findCropMarks };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.AddBleed = api;
 })(typeof self !== 'undefined' ? self : this);
