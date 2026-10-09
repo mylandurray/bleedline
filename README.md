@@ -15,7 +15,8 @@ Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
 - PDFs that already have enough bleed beyond a real TrimBox keep their own artwork as the bleed (on by default; it falls
   back to mirroring, with a warning, if any side is short).
 - Trim marks in registration colour (separation `All`); TrimBox and BleedBox set. Multi-page PDFs and page rotation supported.
-- Trim comes from the PDF's TrimBox, or crop marks found on the page when there isn't one, or a size you set by hand.
+- Trim comes from the PDF's TrimBox, or crop marks found on the page when there isn't one, or a size you set by hand
+  for each file.
   Crop marks are used only when they're unambiguous (thin marks in the margins at the corners, nothing drawn along the
   trim itself, trim covering most of the page); otherwise the page size is used and a warning says why.
 - Warns about anything that needs a check (no TrimBox, existing bleed, printable annotations, layers, image dpi/profile)
