@@ -152,11 +152,166 @@
     return out;
   }
 
+  // ---------- crop mark detection ----------
+
+  // Minimal content-stream reader: yields operands + operator, skipping strings,
+  // dicts and inline images. Enough to follow paths, q/Q/cm and Do.
+  function* tokens(d) {
+    const n = d.length, ops = [];
+    const ws = (c) => c === 32 || c === 10 || c === 13 || c === 9 || c === 12 || c === 0;
+    const delim = (c) => ws(c) || c === 40 || c === 41 || c === 60 || c === 62 || c === 91 || c === 93 || c === 47 || c === 37 || c === 123 || c === 125;
+    let i = 0;
+    while (i < n) {
+      const c = d[i];
+      if (ws(c)) { i++; continue; }
+      if (c === 37) { while (i < n && d[i] !== 10 && d[i] !== 13) i++; continue; } // comment
+      if (c === 40) { // (string)
+        let depth = 0;
+        for (; i < n; i++) {
+          if (d[i] === 92) { i++; continue; }
+          if (d[i] === 40) depth++;
+          else if (d[i] === 41 && --depth === 0) { i++; break; }
+        }
+        ops.push(null); continue;
+      }
+      if (c === 60 && d[i + 1] !== 60) { while (i < n && d[i] !== 62) i++; i++; ops.push(null); continue; } // <hex>
+      if (c === 60 || c === 62) { i += 2; ops.push(null); continue; } // << >>
+      if (c === 91 || c === 93 || c === 123 || c === 125) { i++; continue; }
+      let j = i + 1;
+      while (j < n && !delim(d[j])) j++;
+      const t = String.fromCharCode(...d.subarray(i, j));
+      i = j;
+      if (c === 47) ops.push(t.slice(1)); // /Name
+      else if (/^[+\-.\d]/.test(t)) ops.push(parseFloat(t));
+      else if (t === 'BI') { // inline image: skip to EI
+        while (i < n && !(ws(d[i - 1]) && d[i] === 69 && d[i + 1] === 73 && (i + 2 >= n || ws(d[i + 2])))) i++;
+        i += 2; ops.length = 0;
+      } else { yield [t, ops.slice()]; ops.length = 0; }
+    }
+  }
+
+  // Short, axis-aligned stroked lines (and hairline-thin filled rects) in page space.
+  function collectLines(PDFLib, page) {
+    const { PDFName, PDFDict, PDFArray, PDFRawStream, decodePDFRawStream } = PDFLib;
+    const N = (s) => PDFName.of(s);
+    const ctx = page.doc.context;
+    const lines = [];
+    let budget = 400000; // operators; bail out on huge artwork
+    const bytesOf = (s) => (s instanceof PDFRawStream ? decodePDFRawStream(s).decode() : s.getContents());
+
+    function run(datas, res, ctm, depth) {
+      const stack = [];
+      let path = [], cur = null, start = null;
+      const pt = (x, y) => [ctm[0] * x + ctm[2] * y + ctm[4], ctm[1] * x + ctm[3] * y + ctm[5]];
+      const seg = (a, c) => path.push([a, c]);
+      for (const data of datas) {
+        for (const [op, a] of tokens(data)) {
+          if (--budget < 0) return;
+          switch (op) {
+            case 'q': stack.push(ctm); break;
+            case 'Q': if (stack.length) ctm = stack.pop(); break;
+            case 'cm': if (a.length === 6) ctm = mul(a, ctm); break;
+            case 'm': cur = start = pt(a[0], a[1]); break;
+            case 'l': { const p = pt(a[0], a[1]); if (cur) seg(cur, p); cur = p; break; }
+            case 'c': cur = pt(a[4], a[5]); break;
+            case 'v': case 'y': cur = pt(a[2], a[3]); break;
+            case 'h': if (cur && start) seg(cur, start); cur = start; break;
+            case 're': {
+              const [x, y, w, h] = a; const p = [pt(x, y), pt(x + w, y), pt(x + w, y + h), pt(x, y + h)];
+              path.push({ rect: p }); cur = start = p[0];
+              break;
+            }
+            case 'S': case 's': case 'B': case 'B*': case 'b': case 'b*':
+            case 'f': case 'F': case 'f*': case 'n': {
+              const stroked = /^[SsBb]/.test(op), filled = op !== 'S' && op !== 's' && op !== 'n';
+              for (const p of path) {
+                if (p.rect) {
+                  // A thin filled rectangle is drawn the same as a line.
+                  if (!filled) { if (stroked) for (let k = 0; k < 4; k++) lines.push([p.rect[k], p.rect[(k + 1) % 4]]); continue; }
+                  const xs = p.rect.map((q) => q[0]), ys = p.rect.map((q) => q[1]);
+                  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+                  if (x1 - x0 < 1.5 && y1 - y0 > 2) lines.push([[(x0 + x1) / 2, y0], [(x0 + x1) / 2, y1]]);
+                  else if (y1 - y0 < 1.5 && x1 - x0 > 2) lines.push([[x0, (y0 + y1) / 2], [x1, (y0 + y1) / 2]]);
+                } else if (stroked) lines.push(p);
+              }
+              path = []; cur = start = null;
+              break;
+            }
+            case 'Do': {
+              if (depth > 6 || !res) break;
+              const xd = res.lookupMaybe(N('XObject'), PDFDict);
+              const x = xd && xd.lookup(N(a[0]));
+              if (!x || !x.dict) break;
+              const st = x.dict.lookup(N('Subtype'));
+              if (!st || st.asString() !== '/Form') break;
+              const fm = x.dict.lookupMaybe(N('Matrix'), PDFArray);
+              const m = fm ? fm.asArray().map((v) => v.asNumber()) : [1, 0, 0, 1, 0, 0];
+              let data; try { data = bytesOf(x); } catch (e) { break; }
+              run([data], x.dict.lookupMaybe(N('Resources'), PDFDict) || res, mul(m, ctm), depth + 1);
+              break;
+            }
+            default:
+          }
+        }
+      }
+    }
+
+    const c = page.node.Contents();
+    const streams = !c ? [] : c instanceof PDFArray ? c.asArray().map((r) => ctx.lookup(r)) : [c];
+    const datas = [];
+    for (const s of streams) { try { datas.push(bytesOf(s)); } catch (e) { return []; } }
+    run(datas, page.node.Resources(), [1, 0, 0, 1, 0, 0], 0);
+    return lines;
+  }
+
+  // Look for printer's crop marks: short lines that extend the trim edges out
+  // into the margin at each corner. Returns {x0,y0,x1,y1} in page space or null.
+  function findCropMarks(PDFLib, page, media) {
+    const lines = collectLines(PDFLib, page);
+    const tol = 0.15, minL = 2 * MM, maxL = 40 * MM;
+    const V = [], H = [];
+    for (const [[ax, ay], [bx, by]] of lines) {
+      const dx = Math.abs(ax - bx), dy = Math.abs(ay - by);
+      if (dx < tol && dy >= minL && dy <= maxL) V.push({ p: (ax + bx) / 2, a: Math.min(ay, by), b: Math.max(ay, by) });
+      else if (dy < tol && dx >= minL && dx <= maxL) H.push({ p: (ay + by) / 2, a: Math.min(ax, bx), b: Math.max(ax, bx) });
+    }
+    // Candidate edges: positions with marks on both sides (above and below, or left and right).
+    const cands = (L, lo, hi) => {
+      const byPos = [];
+      for (const l of L) {
+        let g = byPos.find((q) => Math.abs(q.p - l.p) < tol);
+        if (!g) byPos.push((g = { p: l.p, ls: [] }));
+        g.ls.push(l);
+      }
+      return byPos.filter((g) => g.p > lo && g.p < hi && g.ls.length >= 2).slice(0, 60);
+    };
+    const xs = cands(V, media.x0, media.x1), ys = cands(H, media.y0, media.y1);
+    // Marks at an edge: one beyond `lo` (ends before it) and one beyond `hi`.
+    const ends = (g, lo, hi) => (g.ls.some((l) => l.b <= lo + tol) ? 1 : 0) + (g.ls.some((l) => l.a >= hi - tol) ? 1 : 0);
+    let best = null;
+    for (let i = 0; i < xs.length; i++) for (let i2 = 0; i2 < xs.length; i2++) {
+      const L = xs[i], R = xs[i2];
+      if (R.p - L.p < 10 * MM) continue;
+      for (let j = 0; j < ys.length; j++) for (let j2 = 0; j2 < ys.length; j2++) {
+        const B = ys[j], T = ys[j2];
+        if (T.p - B.p < 10 * MM) continue;
+        const score = ends(L, B.p, T.p) + ends(R, B.p, T.p) + ends(B, L.p, R.p) + ends(T, L.p, R.p);
+        if (score < 7) continue;
+        const area = (R.p - L.p) * (T.p - B.p);
+        // Prefer complete sets, then the innermost (trim marks sit inside any bleed marks).
+        if (!best || score > best.score || (score === best.score && area < best.area))
+          best = { score, area, x0: L.p, x1: R.p, y0: B.p, y1: T.p };
+      }
+    }
+    return best;
+  }
+
   // ---------- main ----------
 
   /**
    * opts: { bleedMm, mode: 'mirror'|'stretch', sliverMm, marks, markOffsetMm,
-   *         markLenMm, markWeightPt, imageDpi, useFileDpi, hideSeams }
+   *         markLenMm, markWeightPt, imageDpi, useFileDpi, hideSeams,
+   *         trimWMm, trimHMm (both > 0 = manual trim size, centred) }
    * kind: 'pdf' | 'png' | 'jpg'
    * Returns { bytes, pages: [{wMm, hMm}], warnings: [string] }
    */
@@ -175,6 +330,7 @@
     const margin = marks ? Math.max(b, markOff + markLen) + 2 * MM : b;
     const warnings = [];
     const warn = (w) => { if (!warnings.includes(w)) warnings.push(w); };
+    const custom = opts.trimWMm > 0 && opts.trimHMm > 0 ? { w: opts.trimWMm * MM, h: opts.trimHMm * MM } : null;
 
     const out = await PDFDocument.create({ updateMetadata: false });
     const ctx = out.context;
@@ -246,19 +402,41 @@
 
         // Trim detection and sanity checks.
         const media = rect(p.getMediaBox());
-        const hasTrim = !!node.get(N('TrimBox'));
-        const box = rect(p.getTrimBox()); // TrimBox, else CropBox, else MediaBox
+        let box = rect(p.getTrimBox()); // TrimBox, else CropBox, else MediaBox
         const crop = rect(p.getCropBox());
+        const same = (r, q) => ['x0', 'y0', 'x1', 'y1'].every((key) => Math.abs(r[key] - q[key]) < 0.3);
+        // A TrimBox equal to the page is what many exports write when nobody set one.
+        const hasTrim = !!node.get(N('TrimBox')) && !same(box, media);
+        const rot = p.getRotation().angle || 0;
+        const quarter = ((rot % 180) + 180) % 180 === 90;
+        let found = null, tooBig = false;
+        if (custom) {
+          // Manual size, as seen on screen, centred on the page's trim/crop area.
+          const [w, h] = quarter ? [custom.h, custom.w] : [custom.w, custom.h];
+          const cx = (box.x0 + box.x1) / 2, cy = (box.y0 + box.y1) / 2;
+          box = { x0: cx - w / 2, x1: cx + w / 2, y0: cy - h / 2, y1: cy + h / 2 };
+          warn(`${pn}trim set by hand to ${mm(custom.w)} × ${mm(custom.h)} mm, centred on the page.`);
+          if (box.x0 < media.x0 - 0.3 || box.y0 < media.y0 - 0.3 || box.x1 > media.x1 + 0.3 || box.y1 > media.y1 + 0.3)
+            { tooBig = true; warn(`${pn}the trim size set is bigger than the page; the edges will be blank.`); }
+        } else if (!hasTrim) {
+          try { found = findCropMarks(PDFLib, p, media); } catch (e) { found = null; }
+          if (found) {
+            box = found;
+            warn(`${pn}no TrimBox; trim of ${mm(box.x1 - box.x0)} × ${mm(box.y1 - box.y0)} mm found from the crop marks on the page.`);
+          }
+        }
         const tw = box.x1 - box.x0, th = box.y1 - box.y0;
-        if (!hasTrim) {
+        if (custom || found) {
+          // Nothing to add.
+        } else if (!hasTrim) {
           const guess = looksLikeBleed(tw / MM, th / MM);
-          warn(`${pn}no TrimBox, so the page size (${mm(tw)} × ${mm(th)} mm) is used as the trim.` +
-            (guess ? ` It looks like ${guess} already, so check the trim size.` : ''));
+          warn(`${pn}no TrimBox or crop marks, so the page size (${mm(tw)} × ${mm(th)} mm) is used as the trim.` +
+            (guess ? ` It looks like ${guess} already, so check it and set` : ' If that\'s wrong, set') + ' it under Trim size > Set size.');
         } else {
           const extra = Math.min(box.x0 - media.x0, box.y0 - media.y0, media.x1 - box.x1, media.y1 - box.y1);
           if (extra > 0.3) warn(`${pn}already has ${mm(extra)} mm or more beyond the trim; it is replaced by the new bleed.`);
         }
-        if (crop.x0 > box.x0 + 0.3 || crop.y0 > box.y0 + 0.3 || crop.x1 < box.x1 - 0.3 || crop.y1 < box.y1 - 0.3)
+        if (!tooBig && (crop.x0 > box.x0 + 0.3 || crop.y0 > box.y0 + 0.3 || crop.x1 < box.x1 - 0.3 || crop.y1 < box.y1 - 0.3))
           warn(`${pn}CropBox is smaller than the trim; artwork hidden by the crop will show.`);
 
         // Copy only the page content + resources (not annotations or the page tree).
@@ -278,8 +456,6 @@
           sources.push({ ref: null });
         }
         const s = sources[sources.length - 1];
-        const rot = p.getRotation().angle || 0;
-        const quarter = ((rot % 180) + 180) % 180 === 90;
         s.base = visualMatrix(box, rot);
         s.W = quarter ? th : tw;
         s.H = quarter ? tw : th;
@@ -298,7 +474,15 @@
       const W = ((swap ? img.height : img.width) / dpi) * 72;
       const H = ((swap ? img.width : img.height) / dpi) * 72;
       if (img.orientation > 1) warn(`Rotated/flipped to match the camera orientation tag (EXIF ${img.orientation}).`);
-      sources.push({ ref: img.ref, base: orientMatrix(img.orientation, W, H), W, H });
+      let base = orientMatrix(img.orientation, W, H), tw = W, th = H;
+      if (custom) {
+        // Manual trim: centred on the image (anything outside it is treated as existing bleed).
+        tw = custom.w; th = custom.h;
+        base = mul(base, [1, 0, 0, 1, (tw - W) / 2, (th - H) / 2]);
+        warn(`Trim set by hand to ${mm(tw)} × ${mm(th)} mm, centred on the image.`);
+        if (tw > W + 0.3 || th > H + 0.3) warn('The trim size set is bigger than the image; the edges will be blank.');
+      }
+      sources.push({ ref: img.ref, base, W: tw, H: th });
     }
 
     function iccStream(bytes, n, compressed) {
@@ -451,7 +635,7 @@
     return { bytes: await out.save(), pages: info, warnings };
   }
 
-  const api = { addBleed, MM, parseJpeg, parsePng };
+  const api = { addBleed, MM, parseJpeg, parsePng, findCropMarks };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.AddBleed = api;
 })(typeof self !== 'undefined' ? self : this);

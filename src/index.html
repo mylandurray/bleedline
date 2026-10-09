@@ -34,6 +34,8 @@
   legend { font-weight: 600; margin-bottom: 6px; }
   label.row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   label.row span { color: var(--muted); }
+  label.row .pair { white-space: nowrap; }
+  label.row .pair input { width: 62px; }
   input[type=number] { width: 80px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 5px;
     background: var(--bg); color: var(--ink); font: inherit; text-align: right; }
   .seg { display: flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
@@ -103,6 +105,18 @@
     </div>
     <div class="panel">
       <fieldset>
+        <legend>Trim size</legend>
+        <div class="seg">
+          <label><input type="radio" name="trim" value="auto" checked><span>Auto</span></label>
+          <label><input type="radio" name="trim" value="set"><span>Set size</span></label>
+        </div>
+        <label class="row" id="trimRow"><span>W × H (mm)</span>
+          <span class="pair"><input type="number" id="trimW" min="1" step="0.5"> × <input type="number" id="trimH" min="1" step="0.5"></span></label>
+        <p class="hint" id="trimHint"></p>
+      </fieldset>
+    </div>
+    <div class="panel">
+      <fieldset>
         <legend>Trim marks</legend>
         <label class="row"><span>Add trim marks</span><input type="checkbox" id="marks" checked></label>
         <label class="row"><span>Offset from trim (mm)</span><input type="number" id="markOffsetMm" min="0" step="0.5" value="3"></label>
@@ -157,8 +171,9 @@
   <h3>Warnings</h3>
   <p>Anything that needs a check is listed in amber under the file. Read these before sending to print, especially:</p>
   <ul>
-    <li><strong>No TrimBox</strong>: the page size is taken as the trim. If the file already includes bleed, the trim
-        will be wrong. Files that look like a standard size plus bleed are flagged.</li>
+    <li><strong>No TrimBox</strong>: the trim is taken from crop marks on the page if there are any, otherwise the page
+        size is used. If the file already includes bleed but has no marks, that will be wrong: use
+        <em>Trim size › Set size</em>. Files that look like a standard size plus bleed are flagged.</li>
     <li><strong>Printable annotations not included</strong>: stamps, comments or filled-in form fields set to print are
         left out. Flatten them in Acrobat first if they should print.</li>
     <li><strong>Layers</strong>: layers are kept with the same on/off settings as the original.</li>
@@ -176,8 +191,14 @@
   </ul>
   <h3>Notes</h3>
   <ul>
-    <li>The trim size is the PDF's TrimBox if it has one, otherwise its CropBox / page size. Page rotation is honoured.
+    <li><strong>Trim size › Auto</strong> uses the PDF's TrimBox if it has one (a TrimBox the same as the page counts as
+        none). Otherwise it looks for printer's crop marks on the page (short lines at each corner extending the trim
+        edges) and uses the rectangle they mark; failing that, the CropBox / page size. Page rotation is honoured.
         Multi-page PDFs are processed page by page.</li>
+    <li><strong>Trim size › Set size</strong> uses the width × height you enter (as the artwork appears on screen),
+        centred on the page or image, for every loaded file. Anything outside it, such as existing bleed or marks,
+        is replaced by the new bleed. Switching to <em>Set size</em> fills in the selected file's current trim.
+        Each time the page is opened it starts on <em>Auto</em>.</li>
     <li>The artwork should be <em>finished size with no bleed</em>. If a PDF already has bleed and a TrimBox,
         the existing bleed is replaced.</li>
     <li><strong>Hide on-screen seams</strong> (on by default): PDF viewers draw a faint line wherever two
@@ -207,9 +228,17 @@
   function readOpts() {
     const o = { mode: document.querySelector('input[name=mode]:checked').value, marks: $('marks').checked, useFileDpi: $('useFileDpi').checked, hideSeams: $('hideSeams').checked };
     for (const f of fields) o[f] = parseFloat($(f).value) || 0;
+    if (trimSet()) { o.trimWMm = parseFloat($('trimW').value) || 0; o.trimHMm = parseFloat($('trimH').value) || 0; }
     return o;
   }
-  function saveOpts() { try { localStorage.setItem(KEY, JSON.stringify(readOpts())); } catch (e) {} }
+  const trimSet = () => document.querySelector('input[name=trim]:checked').value === 'set';
+  // The W/H values are remembered, but every session starts on Auto so a
+  // forgotten manual size can't be applied to the next day's files.
+  function saveOpts() {
+    const o = readOpts(); delete o.trimWMm; delete o.trimHMm;
+    o.trimW = $('trimW').value; o.trimH = $('trimH').value;
+    try { localStorage.setItem(KEY, JSON.stringify(o)); } catch (e) {}
+  }
   function loadOpts() {
     let o; try { o = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
     if (!o) return;
@@ -217,6 +246,8 @@
     if (o.marks != null) $('marks').checked = o.marks;
     if (o.useFileDpi != null) $('useFileDpi').checked = o.useFileDpi;
     if (o.hideSeams != null) $('hideSeams').checked = o.hideSeams;
+    if (o.trimW) $('trimW').value = o.trimW;
+    if (o.trimH) $('trimH').value = o.trimH;
     const r = document.querySelector(`input[name=mode][value=${o.mode}]`); if (r) r.checked = true;
   }
   function syncUi() {
@@ -226,6 +257,11 @@
       ? 'Stretches a thin strip from each edge across the bleed. Good for flat colour.'
       : 'Reflects the artwork edge into the bleed. Good for photos and gradients.';
     for (const f of ['markOffsetMm', 'markLenMm', 'markWeightPt']) $(f).disabled = !$('marks').checked;
+    const set = trimSet();
+    $('trimRow').style.display = set ? '' : 'none';
+    $('trimHint').textContent = set
+      ? 'Used for every loaded file, centred on the page or image. Anything outside it is replaced by the new bleed.'
+      : 'Uses the PDF\'s TrimBox, else crop marks found on the page, else the page size.';
   }
 
   // ---- files ----
@@ -340,7 +376,12 @@
   document.addEventListener('drop', (e) => addFiles(e.dataTransfer.files));
 
   let timer;
-  document.querySelector('.side').addEventListener('change', () => {
+  document.querySelector('.side').addEventListener('change', (e) => {
+    // Switching to Set size starts from the selected file's current trim.
+    if (e.target.name === 'trim' && trimSet() && selected && selected.pages) {
+      $('trimW').value = +selected.pages[0].wMm.toFixed(1);
+      $('trimH').value = +selected.pages[0].hMm.toFixed(1);
+    }
     syncUi(); saveOpts(); clearTimeout(timer); timer = setTimeout(reprocessAll, 150);
   });
   $('redo').onclick = reprocessAll;

@@ -10,6 +10,7 @@ Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
 - Artwork is passed through untouched: PDF content, fonts and JPEG data are copied byte-for-byte, PNGs losslessly.
   Layers, output intent, XMP, document info and transparency settings are carried over.
 - Trim marks in registration colour (separation `All`); TrimBox and BleedBox set. Multi-page PDFs and page rotation supported.
+- Trim comes from the PDF's TrimBox, or crop marks found on the page when there isn't one, or a size you set by hand.
 - Warns about anything that needs a check (no TrimBox, existing bleed, printable annotations, layers, image dpi/profile)
   and refuses password-protected or damaged PDFs.
 - Runs entirely in the browser, files never leave the PC. No install, no internet needed.
