@@ -12,7 +12,7 @@ const { checkOutput } = require('./invariants.js');
 const MM = fx.MM;
 const opts = {
   bleedMm: 3, mode: 'mirror', sliverMm: 0.5, marks: false, markOffsetMm: 3, markLenMm: 5,
-  markWeightPt: 0.25, imageDpi: 300, useFileDpi: true, hideSeams: false,
+  markWeightPt: 0.25,
 };
 const A4 = [210 * MM, 297 * MM];
 const TRIM = fx.mmRect(25, 40, 160, 217); // centred on A4, 56% of the page

@@ -50,16 +50,14 @@
 
   // One axis of a cell transform: returns [scale, offset] mapping visual u -> output.
   // side -1 = before the trim, 0 = inside, +1 = after.
-  // `off` shifts the bleed copy towards the trim so its own artwork edge sits
-  // beyond the piece's clip (see the seam notes in addBleed).
-  function axis(side, o, len, k, off) {
+  function axis(side, o, len, k) {
     if (side === 0) return [1, o];
-    if (side < 0) return [-k, o + off];
-    return [-k, o + len - off + k * len];
+    if (side < 0) return [-k, o];
+    return [-k, o + len + k * len];
   }
 
-  // Overlap (pt, ~0.26 mm) that hides on-screen anti-aliasing seams between pieces.
-  const SEAM = 0.75;
+  // Images with no resolution saved are placed at 72 dpi, as Photoshop and Acrobat do.
+  const DEFAULT_DPI = 72;
 
   // PDF boxes may list their corners in any order, so normalise to min/max.
   const rect = (r) => ({
@@ -587,6 +585,61 @@
   }
   const toHex = (a) => Array.from(a, (x) => x.toString(16).padStart(2, '0')).join('');
 
+  // ---------- size checks ----------
+
+  const TOL = 0.5 * MM; // sizes within half a millimetre count as the same
+
+  // Before: pages that are the same size as supplied must get the same trim, so one stray page
+  // (odd crop marks, a different TrimBox) can't be cut to a completely different size.
+  // Throws when they disagree; warns when the trim is much smaller than the artwork.
+  function checkSizes(sources, warn) {
+    const near = (a, b) => Math.abs(a - b) <= TOL;
+    const sameArt = (a, b) => near(a.artW, b.artW) && near(a.artH, b.artH);
+    const sameTrim = (a, b) => near(a.W, b.W) && near(a.H, b.H);
+    const many = sources.length > 1;
+    const pn = (i) => (many ? `Page ${i + 1}: ` : '');
+    const size = (w, h) => `${mm(w)} × ${mm(h)} mm`;
+    const done = new Set();
+    sources.forEach((s, i) => {
+      if (done.has(s)) return;
+      const group = sources.filter((t) => sameArt(s, t));
+      group.forEach((t) => done.add(t));
+      if (group.length < 2) return;
+      // The trim most of these pages agree on.
+      const common = group.reduce((best, t) => {
+        const n = group.filter((u) => sameTrim(t, u)).length;
+        return n > best.n ? { t, n } : best;
+      }, { t: null, n: 0 }).t;
+      const odd = group.filter((t) => !sameTrim(t, common));
+      if (!odd.length) return;
+      const list = odd.map((t) => `page ${sources.indexOf(t) + 1} (${size(t.W, t.H)}, from ${t.from})`).join(', ');
+      throw new Error(`Pages that are the same size (${size(s.artW, s.artH)}) would be trimmed to different sizes: ` +
+        `most to ${size(common.W, common.H)} (from ${common.from}), but ${list}. Nothing was made. ` +
+        'Check the file, or set the trim under Trim size > Custom.');
+    });
+    const froms = [...new Set(sources.map((s) => s.from))];
+    if (froms.length > 1) warn(`The trim was found in different ways on different pages (${froms.join(', ')}); check each page.`);
+    sources.forEach((s, i) => {
+      if (s.W < 0.7 * s.artW - TOL || s.H < 0.7 * s.artH - TOL)
+        warn(`${pn(i)}the trim (${size(s.W, s.H)}) is much smaller than the artwork (${size(s.artW, s.artH)}); check it's right.`);
+    });
+  }
+
+  // After: read the finished PDF back and confirm every page has the trim and bleed it was meant to.
+  async function checkOutput(PDFLib, bytes, sources, b) {
+    const doc = await PDFLib.PDFDocument.load(bytes, { updateMetadata: false });
+    const pages = doc.getPages();
+    const fail = (m) => { throw new Error(`Output check failed: ${m}. Nothing was made; please report this file.`); };
+    if (pages.length !== sources.length) fail(`${pages.length} pages out, ${sources.length} in`);
+    pages.forEach((p, i) => {
+      const s = sources[i], t = rect(p.getTrimBox()), bl = rect(p.getBleedBox()), m = rect(p.getMediaBox());
+      const near = (a, c) => Math.abs(a - c) < 0.01;
+      if (!near(t.x1 - t.x0, s.W) || !near(t.y1 - t.y0, s.H)) fail(`page ${i + 1} trim is ${mm(t.x1 - t.x0)} × ${mm(t.y1 - t.y0)} mm, expected ${mm(s.W)} × ${mm(s.H)} mm`);
+      if (!near(bl.x1 - bl.x0, s.W + 2 * b) || !near(bl.y1 - bl.y0, s.H + 2 * b)) fail(`page ${i + 1} bleed box is the wrong size`);
+      if (bl.x0 < m.x0 - 0.01 || bl.y0 < m.y0 - 0.01 || bl.x1 > m.x1 + 0.01 || bl.y1 > m.y1 + 0.01) fail(`page ${i + 1} bleed is outside the page`);
+    });
+  }
+
   // ---------- main ----------
 
   // Plain-English checks on the numbers, so a bad value fails loudly instead of
@@ -601,7 +654,6 @@
       if (!(num(opts.markWeightPt) && opts.markWeightPt > 0)) bad('Line weight must be more than 0 pt.');
       if (!(num(opts.markOffsetMm) && opts.markOffsetMm >= 0)) bad('Offset from trim must be 0 mm or more.');
     }
-    if (kind !== 'pdf' && !(num(opts.imageDpi) && opts.imageDpi > 0)) bad('Image dpi must be more than 0.');
     const given = (v) => v !== undefined && v !== null;
     if (given(opts.trimWMm) || given(opts.trimHMm)) {
       if (!(given(opts.trimWMm) && given(opts.trimHMm))) bad('Set both the trim width and height, or neither.');
@@ -612,7 +664,7 @@
 
   /**
    * opts: { bleedMm, mode: 'mirror'|'stretch', sliverMm, marks, markOffsetMm,
-   *         markLenMm, markWeightPt, imageDpi, useFileDpi, hideSeams,
+   *         markLenMm, markWeightPt,
    *         keepBleed (true = use the PDF's own bleed when its TrimBox has enough on all sides),
    *         trimWMm, trimHMm (both > 0 = manual trim size, centred) }
    * kind: 'pdf' | 'png' | 'jpg'
@@ -629,15 +681,13 @@
 
     const b = opts.bleedMm * MM;
     const marks = opts.marks;
-    // Marks may not sit inside the bleed, or they would be printed on the artwork.
-    const markOff = marks ? Math.max(opts.markOffsetMm * MM, b) : opts.markOffsetMm * MM;
+    // Marks may sit inside the bleed (they are trimmed off with it), never inside the trim.
+    const markOff = opts.markOffsetMm * MM;
     const markLen = opts.markLenMm * MM;
     const margin = marks ? Math.max(b, markOff + markLen) + 2 * MM : b;
     const warnings = [];
     const warn = (w) => { if (!warnings.includes(w)) warnings.push(w); };
     if (opts.bleedMm === 0) warn('No bleed added (bleed is 0 mm).');
-    if (marks && opts.markOffsetMm * MM < b - 1e-6)
-      warn(`Trim marks moved out to the bleed edge (offset ${+opts.markOffsetMm.toFixed(2)} → ${+opts.bleedMm.toFixed(2)} mm).`);
     const custom = opts.trimWMm > 0 && opts.trimHMm > 0 ? { w: opts.trimWMm * MM, h: opts.trimHMm * MM } : null;
 
     const out = await PDFDocument.create({ updateMetadata: false });
@@ -837,14 +887,20 @@
         s.srcTrim = [box.x0, box.y0, box.x1, box.y1];
         s.W = quarter ? th : tw;
         s.H = quarter ? tw : th;
+        // The artwork as supplied: the visible page (CropBox within the MediaBox), as seen on screen.
+        const vw = Math.min(crop.x1, media.x1) - Math.max(crop.x0, media.x0);
+        const vh = Math.min(crop.y1, media.y1) - Math.max(crop.y0, media.y0);
+        s.artW = quarter ? vh : vw;
+        s.artH = quarter ? vw : vh;
+        s.from = custom ? 'set by hand' : found ? 'crop marks' : hasTrim ? 'TrimBox' : 'page size';
         const group = node.get(N('Group'));
         if (group) s.group = copier.copy(group);
       });
     } else {
       const img = kind === 'png' ? await embedPng(srcBytes) : embedJpeg(srcBytes);
-      let dpi = opts.imageDpi || 300, from = 'the dpi setting';
-      if (opts.useFileDpi !== false && img.dpi) { dpi = img.dpi; from = 'the file'; }
-      warn(`Image placed at ${Math.round(dpi)} dpi (from ${from}).`);
+      const dpi = img.dpi || DEFAULT_DPI;
+      warn(img.dpi ? `Image placed at its own ${Math.round(dpi)} dpi.`
+        : `Image has no dpi saved, so it is placed at ${DEFAULT_DPI} dpi. Check the size, or set the resolution in Photoshop and re-save.`);
       const swap = img.orientation >= 5;
       const W = ((swap ? img.height : img.width) / dpi) * 72;
       const H = ((swap ? img.width : img.height) / dpi) * 72;
@@ -857,8 +913,9 @@
         warn(`Trim set by hand to ${mm(tw)} × ${mm(th)} mm, centred on the image.`);
         if (tw > W + 0.3 || th > H + 0.3) warn('The trim size set is bigger than the image; the edges will be blank.');
       }
-      sources.push({ ref: img.ref, base, W: tw, H: th });
+      sources.push({ ref: img.ref, base, W: tw, H: th, artW: W, artH: H, from: custom ? 'set by hand' : 'image size' });
     }
+    checkSizes(sources, warn);
 
     function iccStream(bytes, n, compressed) {
       const alt = n === 4 ? 'DeviceCMYK' : n === 1 ? 'DeviceGray' : 'DeviceRGB';
@@ -930,15 +987,8 @@
     // Standards rules (see standardsOf): keep the source's version and claim valid.
     const claims = [std.pdfx && `PDF/X-${std.pdfx}`, std.pdfa && `PDF/A-${std.pdfa}`].filter(Boolean);
     const strict = std.pdfx === '1a' || std.pdfx === '3' || std.pdfa === 1; // no transparency, no object streams
-    let hide = opts.hideSeams === true;
-    if (hide && strict) {
-      hide = false;
-      warn(`Seam hiding skipped to keep the file ${claims.join(' / ')} valid.`);
-    }
     if (claims.length) warn(`Source is ${claims.join(' and ')}: claim kept; re-verify in Acrobat Preflight before sending.`);
-    let version = std.version;
-    // Transparency groups need PDF 1.4. Files that claim a standard keep their version.
-    if (version && hide && b > 0 && !claims.length && +version < 1.4 && sources.some((s) => s.ref && !s.keep)) version = '1.4';
+    const version = std.version;
     const objectStreams = !version || (+version >= 1.5 && !strict);
 
     const info = [];
@@ -966,42 +1016,22 @@
         const sliver = Math.max(0.01, (opts.sliverMm || 0.5) * MM);
         const k = opts.mode === 'stretch' ? b / sliver : 1;
 
-        // Seams: any AA renderer draws a faint line where two separately clipped
-        // pieces meet, tinted by whatever objects are stacked under the edge.
-        // To hide it, the untouched artwork goes down first, then each bleed piece
-        // is painted over it as a transparency group: the group is rendered as one
-        // flat image and only then clipped, and its own artwork edges sit beyond
-        // the clip, so the clip edge lands on solid content. Pieces reach SEAM pt
-        // past their edge (side strips over the trim edge, corners over the sides),
-        // so the outer SEAM pt of the trim shows the mirrored edge instead of the
-        // original. With hideSeams off, every piece is clipped exactly instead.
-        const ov = hide ? SEAM : 0, g = 2 * ov;
-        const pw = W + 2 * margin, ph = H + 2 * margin;
-        const span = (side, o, len, ext) => (side < 0 ? [o - b, b + ext] : side > 0 ? [o + len - ext, b + ext] : [o, len]);
+        // Each piece is clipped exactly to its own cell, so the trim area is the original artwork.
+        // (Viewers may show faint hairlines where pieces meet; they don't print.)
+        const span = (side, o, len) => (side < 0 ? [o - b, b] : side > 0 ? [o + len, b] : [o, len]);
         const cells = [[0, 0]];
-        for (const j of [-1, 0, 1]) for (const i of [-1, 0, 1]) if (!i !== !j) cells.push([i, j]);
-        for (const j of [-1, 1]) for (const i of [-1, 1]) cells.push([i, j]);
+        for (const j of [-1, 0, 1]) for (const i of [-1, 0, 1]) if (i || j) cells.push([i, j]);
         for (const [i, j] of cells) {
           if (b <= 0 && (i || j)) continue;
-          const [sx, ex] = axis(i, ox, W, k, i ? g : 0);
-          const [sy, ey] = axis(j, oy, H, k, j ? g : 0);
-          const m = mul(s.base, [sx, 0, 0, sy, ex, ey]);
-          const [cx, cw] = span(i, ox, W, i ? ov : 0);
-          const [cy, ch] = span(j, oy, H, j ? ov : 0);
-          let xo = name, pre = [concatTransformationMatrix(...m)];
-          if (hide && (i || j)) {
-            const grp = ctx.register(ctx.flateStream(`${m.map((v) => +v.toFixed(6)).join(' ')} cm /Art Do`, {
-              Type: 'XObject', Subtype: 'Form', BBox: [0, 0, pw, ph],
-              Group: { S: 'Transparency' }, Resources: { XObject: { Art: s.ref } },
-            }));
-            xo = page.node.newXObject('Bleed', grp);
-            pre = [];
-          }
+          const [sx, ex] = axis(i, ox, W, k);
+          const [sy, ey] = axis(j, oy, H, k);
+          const [cx, cw] = span(i, ox, W);
+          const [cy, ch] = span(j, oy, H);
           page.pushOperators(
             pushGraphicsState(),
             rectangle(cx, cy, cw, ch), clip(), endPath(),
-            ...pre,
-            drawObject(xo),
+            concatTransformationMatrix(...mul(s.base, [sx, 0, 0, sy, ex, ey])),
+            drawObject(name),
             popGraphicsState(),
           );
         }
@@ -1026,7 +1056,7 @@
 
       page.setTrimBox(ox, oy, W, H);
       page.setBleedBox(ox - b, oy - b, W + 2 * b, H + 2 * b);
-      info.push({ wMm: W / MM, hMm: H / MM, srcTrim: s.srcTrim });
+      info.push({ wMm: W / MM, hMm: H / MM, artWMm: s.artW / MM, artHMm: s.artH / MM, from: s.from, srcTrim: s.srcTrim });
     }
 
     function addColorSpace(node, ref) {
@@ -1051,6 +1081,7 @@
       bytes[5] = version.charCodeAt(0);
       bytes[7] = version.charCodeAt(2);
     }
+    await checkOutput(PDFLib, bytes, sources, b);
     return { bytes, pages: info, warnings };
   }
 

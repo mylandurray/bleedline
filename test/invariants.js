@@ -48,11 +48,10 @@ function markPoints(content) {
  *   trimMm            [w, h], or one [w, h] per page (required)
  *   bleedMm           number, all four sides (required)
  *   pages             expected page count
- *   marks             true -> trim marks must exist and lie entirely outside the BleedBox
+ *   marks             true -> trim marks must exist and lie entirely outside the TrimBox
  *   source            source PDF bytes -> the Art XObject content (decoded) must equal the page content
  *   rawContent        true -> also compare the undecoded bytes and /Filter, single-stream pages
  *   exactCentreClip   true -> the first (centre) clip equals the TrimBox
- *                     (OPT-IN: only holds with hideSeams:false, fails with seams on)
  * Returns the loaded output PDFDocument for extra assertions.
  */
 async function checkOutput(bytes, expect) {
@@ -129,8 +128,8 @@ async function checkOutput(bytes, expect) {
       const pts = markPoints(content);
       assert.ok(pts.length >= 16, tag + 'expected trim marks');
       for (const [x, y] of pts) {
-        const inside = x > bleed.x0 + 1e-6 && x < bleed.x1 - 1e-6 && y > bleed.y0 + 1e-6 && y < bleed.y1 - 1e-6;
-        assert.ok(!inside, `${tag}mark point (${x}, ${y}) falls inside the BleedBox`);
+        const inside = x > trim.x0 + 1e-6 && x < trim.x1 - 1e-6 && y > trim.y0 + 1e-6 && y < trim.y1 - 1e-6;
+        assert.ok(!inside, `${tag}mark point (${x}, ${y}) falls inside the TrimBox`);
       }
     }
   });

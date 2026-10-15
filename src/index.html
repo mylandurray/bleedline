@@ -15,14 +15,17 @@
   }
   * { box-sizing: border-box; }
   body { margin: 0; font: 14px/1.4 system-ui, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
-  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px;
-    border-bottom: 1px solid var(--line); background: var(--panel); }
+  header { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; padding: 8px 20px;
+    border-bottom: 1px solid var(--line); background: var(--panel); min-height: 51px; }
   header h1 { font-size: 17px; margin: 0; white-space: nowrap; }
-  header button { flex-shrink: 0; width: 30px; height: 30px; padding: 0; border-radius: 50%; font-weight: 600; }
-  header .left { display: flex; align-items: baseline; gap: 18px; min-width: 0; flex: 1; flex-wrap: wrap; row-gap: 2px; }
-  #trimInfo { display: flex; align-items: baseline; gap: 6px; min-width: 0; max-width: 100%; color: var(--muted); white-space: nowrap; }
-  #trimInfo strong { color: var(--ink); font-size: 15px; flex-shrink: 0; }
-  #trimInfo span { overflow: hidden; text-overflow: ellipsis; }
+  header .right { display: flex; justify-content: flex-end; gap: 8px; }
+  header button { white-space: nowrap; }
+  #helpBtn { width: 30px; height: 30px; padding: 0; border-radius: 50%; font-weight: 600; }
+  #trimInfo { display: flex; align-items: baseline; justify-content: center; gap: 14px; min-width: 0; color: var(--muted); white-space: nowrap; }
+  #trimInfo strong { color: var(--ink); font-size: 15px; }
+  #trimInfo .arrow { color: var(--muted); }
+  #trimInfo .pages { font-size: 12px; }
+  @media (max-width: 800px) { header { grid-template-columns: 1fr auto; } #trimInfo { grid-row: 2; grid-column: 1 / -1; flex-wrap: wrap; } }
   main { display: grid; grid-template-columns: 260px 1fr; gap: 16px; padding: 16px 20px; height: calc(100vh - 51px); }
   @media (max-width: 800px) { main { grid-template-columns: 1fr; height: auto; } }
   .side { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 2px 14px; overflow: auto;
@@ -60,10 +63,13 @@
   button.rm { border: 0; background: none; color: var(--muted); font-size: 16px; padding: 4px 8px; }
   button.rm:hover { color: var(--err); }
   .work { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
-  #drop { border: 2px dashed var(--line); border-radius: 8px; padding: 16px; text-align: center;
-    color: var(--muted); cursor: pointer; background: var(--panel); }
-  #drop.over { border-color: var(--accent); background: var(--drop); color: var(--ink); }
-  #drop strong { color: var(--ink); font-size: 15px; }
+  #stage { flex: 1; position: relative; min-height: 400px; display: flex; }
+  #drop { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+    border: 2px dashed var(--line); border-radius: 8px; color: var(--muted); cursor: pointer; background: var(--panel); z-index: 1; }
+  #drop svg { width: 40px; height: 40px; color: var(--accent); margin-bottom: 4px; }
+  #drop strong { color: var(--ink); font-size: 17px; }
+  #drop:hover, #drop.over { border-color: var(--accent); background: var(--drop); color: var(--ink); }
+  body.has-files #drop:not(.over) { display: none; }
   #list { display: grid; gap: 6px; max-height: 260px; overflow: auto; flex-shrink: 0; }
   #list:empty { display: none; }
   .item { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 6px 10px; border: 1px solid var(--line);
@@ -74,9 +80,10 @@
   .item .meta.err { color: var(--err); }
   .item ul.warn { flex-basis: 100%; margin: 2px 0 0; padding-left: 18px; font-size: 12px; color: var(--warn); }
   .item ul.warn:empty { display: none; }
-  #preview { flex: 1; width: 100%; min-height: 400px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  #preview { flex: 1; width: 100%; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
   .hint { color: var(--muted); font-size: 12px; margin: 0; }
   .hint:empty, [hidden] { display: none !important; }
+  body:not(.has-files) #preview, body:not(.has-files) #addBtn { display: none; }
   dialog { max-width: 620px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--ink); padding: 20px 24px; }
   dialog::backdrop { background: rgba(0,0,0,.4); }
   dialog h2 { margin-top: 0; }
@@ -87,11 +94,12 @@
 </head>
 <body>
 <header>
-  <div class="left">
-    <h1>Bleedline</h1>
-    <span id="trimInfo"></span>
+  <h1>Bleedline</h1>
+  <div id="trimInfo"></div>
+  <div class="right">
+    <button id="addBtn" title="Add more files (or drop them anywhere)">+ Add files</button>
+    <button id="helpBtn" title="Help (F1)" aria-label="Help">?</button>
   </div>
-  <button id="helpBtn" title="Help (F1)" aria-label="Help">?</button>
 </header>
 <main>
   <div class="side">
@@ -104,7 +112,6 @@
       </div>
       <label class="row" id="sliverRow" title="Width of the edge strip that gets stretched"><span>Edge strip</span><span><input type="number" id="sliverMm" min="0.05" step="0.1" value="0.5"><span class="unit">mm</span></span></label>
       <label class="check" title="PDFs with a TrimBox and enough artwork beyond it on every side keep that artwork as the bleed."><input type="checkbox" id="keepBleed" checked>Keep existing bleed</label>
-      <label class="check" title="Hides hairlines some PDF viewers show where bleed meets artwork, by covering the outer 0.26 mm of the trim. Leave off to keep the trim area exactly as supplied."><input type="checkbox" id="hideSeams">Hide on-screen seams</label>
     </fieldset>
     <fieldset id="trimFs">
       <legend>Trim size <span id="trimFor"></span></legend>
@@ -125,20 +132,19 @@
         <label>Weight pt<input type="number" id="markWeightPt" min="0.1" step="0.05" value="0.25"></label>
       </div>
     </fieldset>
-    <fieldset>
-      <legend>Images (JPG / PNG)</legend>
-      <label class="check"><input type="checkbox" id="useFileDpi" checked>Use the file's own dpi</label>
-      <label class="row" title="Trim size of an image = pixels ÷ dpi"><span id="dpiLabel">Resolution</span><span><input type="number" id="imageDpi" min="1" step="1" value="300"><span class="unit">dpi</span></span></label>
-    </fieldset>
   </div>
 
   <div class="work">
-    <div id="drop">
-      <strong>Drop PDF, JPG or PNG files here</strong> or click to choose
-      <input type="file" id="file" accept=".pdf,.jpg,.jpeg,.png" multiple hidden>
-    </div>
     <div id="list"></div>
-    <iframe id="preview" title="Preview"></iframe>
+    <div id="stage">
+      <div id="drop">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V4m-5 5 5-5 5 5M5 20h14"/></svg>
+        <strong>Drop PDF, JPG or PNG files here</strong>
+        <span>or click to choose</span>
+      </div>
+      <iframe id="preview" title="Preview"></iframe>
+    </div>
+    <input type="file" id="file" accept=".pdf,.jpg,.jpeg,.png" multiple hidden>
   </div>
 </main>
 
@@ -149,9 +155,11 @@
   <h3>Using it</h3>
   <ol>
     <li>Set the bleed and trim-mark options on the left. Hover over an option for a short explanation.</li>
-    <li>Drop one or more PDF, JPG or PNG files on the drop area (or click it).</li>
+    <li>Drop one or more PDF, JPG or PNG files on the big drop area (or click it). Once files are loaded, drop more
+        anywhere on the page or use <strong>+ Add files</strong>.</li>
     <li>Each file is processed straight away and shown in the preview. Click <strong>Download</strong> to save
-        <em>name</em>_bleed.pdf. Click a file in the list to preview it.</li>
+        <em>name</em>_bleed.pdf. Click a file in the list to preview it. The top bar shows the selected file's
+        artwork size as supplied, the trim it gets, and the final size with bleed.</li>
     <li>Changing a setting re-processes all loaded files; changing a trim size re-processes only the selected file. A setting that isn't valid (empty, negative, or zero where it
         must be more) is outlined in red and nothing is processed until it's fixed.</li>
   </ol>
@@ -175,6 +183,13 @@
         left out. Flatten them in Acrobat first if they should print.</li>
     <li><strong>Layers</strong>: layers are kept with the same on/off settings as the original.</li>
   </ul>
+  <h3>Size check</h3>
+  <p>Before anything is made, pages that are the same size in the file must all get the same trim. If one page
+     would be cut to a different size (say a stray TrimBox, or crop marks found on only one page), the file is
+     refused with a message naming the page. Check the file, or set the trim under <em>Trim size › Custom</em>.
+     Pages of different sizes may have different trims. You also get a warning if the trim is much smaller than the
+     artwork, or was found in different ways on different pages. After the PDF is made it is read back to confirm
+     every page has the trim and bleed it should.</p>
   <p>Password-protected or damaged PDFs are refused rather than risk a broken output. So are arithmetic-coded and 12-bit
      JPEGs, which most RIPs can't read: re-save them as a normal JPEG.</p>
   <h3>What you get</h3>
@@ -182,15 +197,15 @@
     <li>A PDF the size of trim + bleed + room for the marks. TrimBox and BleedBox are set, so imposition
         software and preflight pick up the trim correctly.</li>
     <li>PDF page content, fonts and images are copied unchanged (byte-for-byte for single-stream pages; multi-part page
-        content is joined and recompressed losslessly), not rasterised. With <em>Hide on-screen seams</em> off,
-        nothing inside the trim changes.</li>
+        content is joined and recompressed losslessly), not rasterised. Nothing inside the trim is changed, scaled
+        or moved. Some PDF viewers show faint hairlines where the bleed meets the artwork; they don't print.</li>
     <li>Output intent (PDF/X profile), XMP metadata, document info, transparency settings and layers are carried over.
         The XMP gets a new instance ID and modification date, since the output is a new file.</li>
     <li>PDF/X and PDF/A files keep their claim: the output keeps the source's PDF version, and for PDF/X-1a, PDF/X-3
         and PDF/A-1 it is saved without object streams or transparency. You'll get a warning to re-verify the file in
         Acrobat Preflight before sending it, because Bleedline can't fully check conformance itself.</li>
     <li>Trim marks are drawn in registration colour (separation <em>All</em>, so they print on every plate including
-        spots), outside the bleed. If the offset is smaller than the bleed, they are moved out to the bleed edge.</li>
+        spots), at the offset you set. They may sit in the bleed, which is trimmed off, but never inside the trim.</li>
   </ul>
   <h3>Notes</h3>
   <ul>
@@ -216,13 +231,7 @@
         sides, that artwork is used as the bleed, cut to the bleed size, instead of mirroring. Nothing is flipped or
         pieced together, so there are no seams. It isn't used when the trim comes from crop marks or <em>Custom</em>.
         If only some sides have enough, the bleed is mirrored and a warning says so.</li>
-    <li><strong>Hide on-screen seams</strong> (off by default): PDF viewers draw a faint line wherever two
-        separately cut pieces of artwork meet, so a plain bleed shows hairlines along the trim on screen (they don't
-        print). With this on, the bleed is painted over the outer 0.26 mm of the trim with a mirror of the edge, which
-        removes the lines; at that width it is lost in normal trimming tolerance. Untick it if the trim area must stay
-        exactly as supplied. It is skipped (with a warning) for PDF/X-1a, PDF/X-3 and PDF/A-1 files, which don't
-        allow the transparency it uses.</li>
-    <li>Images are placed at the dpi saved in the file (or the dpi setting if there isn't one), turned to match the
+    <li>Images are placed at the dpi saved in the file (72 dpi, with a warning, if none is saved), turned to match the
         camera orientation tag, and keep their embedded colour profile. JPEG data is embedded unchanged; PNGs are
         embedded losslessly (greyscale, 16-bit and indexed stay as they are). PNGs with transparency are decoded to
         8-bit RGB with an alpha mask, and you'll get a warning if that changes anything.</li>
@@ -236,7 +245,7 @@
 <script>
 (() => {
   const $ = (id) => document.getElementById(id);
-  const fields = ['bleedMm', 'sliverMm', 'markOffsetMm', 'markLenMm', 'markWeightPt', 'imageDpi'];
+  const fields = ['bleedMm', 'sliverMm', 'markOffsetMm', 'markLenMm', 'markWeightPt'];
   const KEY = 'bleedline.settings', OLD_KEY = 'addbleed.settings';
   // entry.trim = { mode: 'auto' | 'set', w, h } (mm): each file has its own trim setting.
   const files = []; // { file, kind, trim, url, urlRun, run, opts, pages, error, el }
@@ -245,7 +254,7 @@
   // ---- settings ----
   // The shared settings, plus the trim size of `entry` when it is set by hand.
   function readOpts(entry) {
-    const o = { mode: document.querySelector('input[name=mode]:checked').value, marks: $('marks').checked, useFileDpi: $('useFileDpi').checked, hideSeams: $('hideSeams').checked, keepBleed: $('keepBleed').checked };
+    const o = { mode: document.querySelector('input[name=mode]:checked').value, marks: $('marks').checked, keepBleed: $('keepBleed').checked };
     // An empty field reads as NaN so it fails the checks instead of quietly becoming 0.
     for (const f of fields) o[f] = parseFloat($(f).value);
     if (entry && entry.trim.mode === 'set') { o.trimWMm = entry.trim.w; o.trimHMm = entry.trim.h; }
@@ -261,7 +270,6 @@
       markOffsetMm: !o.marks || ok(o.markOffsetMm, 0, null, true),
       markLenMm: !o.marks || ok(o.markLenMm, 0),
       markWeightPt: !o.marks || ok(o.markWeightPt, 0),
-      imageDpi: ok(o.imageDpi, 0),
       trimW: !set || ok(o.trimWMm, 0),
       trimH: !set || ok(o.trimHMm, 0),
     };
@@ -288,7 +296,7 @@
   // Trim sizes belong to the files and aren't saved, so a forgotten manual
   // size can't be applied to the next day's files.
   function saveOpts() {
-    const o = readOpts(); o.v = 3;
+    const o = readOpts(); o.v = 4;
     try { localStorage.setItem(KEY, JSON.stringify(o)); } catch (e) {}
   }
   function loadOpts() {
@@ -296,15 +304,12 @@
     if (!o) return;
     for (const f of fields) if (o[f] != null) $(f).value = o[f];
     if (o.marks != null) $('marks').checked = o.marks;
-    if (o.useFileDpi != null) $('useFileDpi').checked = o.useFileDpi;
-    if (o.v >= 2 && o.hideSeams != null) $('hideSeams').checked = o.hideSeams;
     if (o.v >= 3 && o.keepBleed != null) $('keepBleed').checked = o.keepBleed;
     const r = document.querySelector(`input[name=mode][value=${o.mode}]`); if (r) r.checked = true;
   }
   function syncUi() {
     $('sliverRow').hidden = readOpts().mode !== 'stretch';
     for (const f of ['markOffsetMm', 'markLenMm', 'markWeightPt']) $(f).disabled = !$('marks').checked;
-    $('dpiLabel').textContent = $('useFileDpi').checked ? 'Otherwise' : 'Resolution';
     $('trimRow').hidden = !trimSet();
     $('trimFor').textContent = selected ? '· ' + selected.file.name : '';
     $('trimFor').title = selected ? selected.file.name : '';
@@ -335,6 +340,7 @@
       entry.el.onclick = () => select(entry);
       $('list').appendChild(entry.el);
       files.push(entry);
+      document.body.classList.add('has-files');
       process(entry).then(() => { if (!selected || selected === entry || files.length === 1) select(entry); });
     }
   }
@@ -393,23 +399,29 @@
     entryToPanel(); syncUi(); checkOpts();
     showPreview(entry);
   }
-  // Header: trim size of the selected file (and the size with bleed).
+  // Header: the selected file's artwork size as supplied, its trim, and the size with bleed.
   function showTrim(entry) {
     const el = $('trimInfo');
-    if (!entry || !entry.pages) { el.textContent = ''; return; }
+    el.replaceChildren();
+    if (!entry || !entry.pages) return;
     const f = (n) => n.toFixed(1).replace(/\.0$/, '');
-    const size = (p, add) => `${f(p.wMm + add)} × ${f(p.hMm + add)} mm`;
+    const size = (w, h) => `${f(w)} × ${f(h)} mm`;
     const b = 2 * entry.opts.bleedMm; // what the output was made with, not the live field
     const p = entry.pages[0];
     const mixed = entry.pages.some((q) => Math.abs(q.wMm - p.wMm) > 0.05 || Math.abs(q.hMm - p.hMm) > 0.05);
-    const pages = entry.pages.length > 1 ? (mixed ? ` · page 1 of ${entry.pages.length} (sizes vary)` : ` · ${entry.pages.length} pages`) : '';
-    el.innerHTML = '';
-    el.title = entry.file.name;
-    const strong = document.createElement('strong');
-    strong.textContent = `Trim ${size(p, 0)}`;
-    const rest = document.createElement('span');
-    rest.textContent = `· with bleed ${size(p, b)}${pages}`;
-    el.append(strong, rest);
+    const add = (cls, text, title) => {
+      const s = document.createElement(cls === 'strong' ? 'strong' : 'span');
+      if (cls !== 'strong') s.className = cls;
+      s.textContent = text;
+      if (title) s.title = title;
+      el.append(s);
+    };
+    add('art', `Artwork ${size(p.artWMm, p.artHMm)}`, 'Size of the file as supplied');
+    add('arrow', '→');
+    add('strong', `Trim ${size(p.wMm, p.hMm)}`, `Trim from ${p.from}`);
+    add('arrow', '→');
+    add('bled', `With bleed ${size(p.wMm + b, p.hMm + b)}`);
+    if (entry.pages.length > 1) add('pages', mixed ? `page 1 of ${entry.pages.length}, sizes vary` : `${entry.pages.length} pages`);
   }
 
   function showPreview(entry) {
@@ -426,6 +438,7 @@
     files.splice(files.indexOf(entry), 1);
     entry.el.remove();
     if (entry.url) URL.revokeObjectURL(entry.url);
+    document.body.classList.toggle('has-files', files.length > 0);
     if (selected === entry) select(files[0] || null);
   }
   // Called straight away on any edit: the current output no longer matches the
@@ -443,6 +456,7 @@
   // ---- wiring ----
   const drop = $('drop');
   drop.onclick = () => $('file').click();
+  $('addBtn').onclick = () => $('file').click();
   $('file').onchange = (e) => { addFiles(e.target.files); e.target.value = ''; };
   ['dragenter', 'dragover'].forEach((t) => document.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach((t) => document.addEventListener(t, (e) => { e.preventDefault(); if (t === 'drop' || !e.relatedTarget) drop.classList.remove('over'); }));

@@ -7,7 +7,7 @@ const { checkOutput } = require('./invariants.js');
 const MM = fx.MM;
 const base = {
   bleedMm: 3, mode: 'mirror', sliverMm: 0.5, marks: true, markOffsetMm: 3, markLenMm: 5,
-  markWeightPt: 0.25, imageDpi: 300, useFileDpi: true, hideSeams: true,
+  markWeightPt: 0.25,
 };
 const run = (bytes, kind, o = {}) => addBleed(PDFLib, bytes, kind, { ...base, ...o });
 
@@ -50,12 +50,12 @@ test('JPG', async () => {
 });
 
 test('PNG (opaque RGB)', async () => {
-  const r = await run(fx.png({ width: 300, height: 150 }), 'png', { useFileDpi: false, imageDpi: 150 });
+  const r = await run(fx.png({ width: 300, height: 150, dpi: 150 }), 'png');
   await checkOutput(r.bytes, { trimMm: [50.8, 25.4], bleedMm: 3, marks: true, pages: 1 });
 });
 
 test('PNG with alpha (decode path)', async () => {
-  const r = await run(fx.png({ width: 300, height: 150, alpha: true }), 'png', { useFileDpi: false, imageDpi: 150, marks: false });
+  const r = await run(fx.png({ width: 300, height: 150, alpha: true, dpi: 150 }), 'png', { marks: false });
   await checkOutput(r.bytes, { trimMm: [50.8, 25.4], bleedMm: 3, pages: 1 });
 });
 
@@ -95,9 +95,11 @@ test('mark settings are only checked when marks are on', async () => {
   await run(src, 'pdf', { marks: false, markLenMm: 0 });
 });
 
-test('image dpi must be positive (images only)', async () => {
-  await assert.rejects(run(fx.png(), 'png', { imageDpi: 0 }), /dpi/);
-  await run(await simple(), 'pdf', { imageDpi: NaN });
+test('image with no dpi saved is placed at 72 dpi, with a warning', async () => {
+  // 300 x 150 px at 72 dpi = 105.83 x 52.92 mm
+  const r = await run(fx.png({ width: 300, height: 150 }), 'png');
+  await checkOutput(r.bytes, { trimMm: [300 / 72 * 25.4, 150 / 72 * 25.4], bleedMm: 3, marks: true, pages: 1 });
+  assert.ok(r.warnings.some((w) => /no dpi saved, so it is placed at 72 dpi/.test(w)), r.warnings.join('|'));
 });
 
 test('half-filled or non-positive trim W/H throws', async () => {
@@ -140,20 +142,12 @@ async function hasTransparencyGroup(bytes) {
   return false;
 }
 
-test('default options: centre clip is the TrimBox and no transparency group', async () => {
+test('centre clip is the TrimBox and no transparency group', async () => {
   const trim = fx.mmRect(10, 10, 90, 60);
   const src = await fx.page({ media: [120 * MM, 90 * MM], trim, content: fx.fill(trim, [1, 0, 0, 0]) });
-  const { hideSeams, ...defaults } = base;
-  const r = await addBleed(PDFLib, src, 'pdf', { ...defaults, marks: false });
+  const r = await addBleed(PDFLib, src, 'pdf', { ...base, marks: false });
   await checkOutput(r.bytes, { trimMm: [90, 60], bleedMm: 3, source: src, exactCentreClip: true });
   assert.equal(await hasTransparencyGroup(r.bytes), false);
-});
-
-test('hideSeams: true still adds transparency groups', async () => {
-  const trim = fx.mmRect(10, 10, 90, 60);
-  const src = await fx.page({ media: [120 * MM, 90 * MM], trim, content: fx.fill(trim, [1, 0, 0, 0]) });
-  const r = await run(src, 'pdf', { marks: false, hideSeams: true });
-  assert.equal(await hasTransparencyGroup(r.bytes), true);
 });
 
 // ---------- page content copied once (phase 4a) ----------
@@ -201,4 +195,37 @@ test('single stream with extra dict keys: decoded and recompressed', async () =>
   for (const [, obj] of out.context.enumerateIndirectObjects()) {
     if (obj instanceof PDFLib.PDFRawStream) assert.equal(obj.dict.get(PDFLib.PDFName.of('DL')), undefined, 'orphan source stream copied');
   }
+});
+
+// ---------- size check: pages the same size get the same trim ----------
+
+test('a page trimmed differently from the other pages of its size is refused', async () => {
+  const full = fx.fill(fx.mmRect(0, 0, 216, 303), [0, 0, 1, 0]);
+  const src = await fx.pdf([
+    { media: [216 * MM, 303 * MM], trim: fx.mmRect(3, 3, 210, 297), content: full },
+    { media: [216 * MM, 303 * MM], trim: fx.mmRect(50, 50, 100, 150), content: full },
+    { media: [216 * MM, 303 * MM], trim: fx.mmRect(3, 3, 210, 297), content: full },
+  ]);
+  await assert.rejects(run(src, 'pdf'), /same size \(216\.0 × 303\.0 mm\).*most to 210\.0 × 297\.0 mm \(from TrimBox\), but page 2 \(100\.0 × 150\.0 mm, from TrimBox\)/);
+  // Setting the trim by hand makes every page the same, so it goes through.
+  const r = await run(src, 'pdf', { trimWMm: 210, trimHMm: 297 });
+  await checkOutput(r.bytes, { trimMm: [210, 297], bleedMm: 3, pages: 3 });
+});
+
+test('pages of different sizes may have different trims; the result reports artwork and trim', async () => {
+  const src = await fx.pdf([
+    { media: [216 * MM, 303 * MM], trim: fx.mmRect(3, 3, 210, 297), content: fx.fill(fx.mmRect(0, 0, 216, 303)) },
+    { media: [100 * MM, 70 * MM], content: fx.fill(fx.mmRect(0, 0, 100, 70)) },
+  ]);
+  const r = await run(src, 'pdf');
+  assert.ok(Math.abs(r.pages[0].artWMm - 216) < 0.01 && Math.abs(r.pages[0].wMm - 210) < 0.01);
+  assert.equal(r.pages[0].from, 'TrimBox');
+  assert.equal(r.pages[1].from, 'page size');
+  assert.ok(r.warnings.some((w) => /different ways on different pages \(TrimBox, page size\)/.test(w)), r.warnings.join('|'));
+});
+
+test('a trim much smaller than the artwork warns', async () => {
+  const src = await fx.page({ media: [200 * MM, 200 * MM], trim: fx.mmRect(50, 50, 100, 100), content: fx.fill(fx.mmRect(0, 0, 200, 200)) });
+  const r = await run(src, 'pdf');
+  assert.ok(r.warnings.some((w) => /trim \(100\.0 × 100\.0 mm\) is much smaller than the artwork \(200\.0 × 200\.0 mm\)/.test(w)), r.warnings.join('|'));
 });

@@ -5,7 +5,7 @@
 A single offline web page that adds bleed and trim marks to finished-size artwork, like Acrobat's *Add Bleed* tool.
 Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
 
-- **Mirror** mode reflects the artwork edge into the bleed; **Stretch edge** stretches a thin edge sliver across it.
+- **Mirror** mode reflects the artwork edge into the bleed; **Stretch** stretches a thin edge strip across it.
 - Stays vector: the original page is placed and redrawn flipped/stretched into each bleed strip, not rasterised.
 - PDF page content, fonts and images are copied unchanged (byte-for-byte for single-stream pages; multi-part page
   content is joined and recompressed losslessly). JPEG data is embedded as is, PNGs losslessly.
@@ -14,11 +14,15 @@ Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
   PDF/A-1 it uses no object streams or transparency. A warning reminds you to re-verify in Acrobat Preflight.
 - PDFs that already have enough bleed beyond a real TrimBox keep their own artwork as the bleed (on by default; it falls
   back to mirroring, with a warning, if any side is short).
-- Trim marks in registration colour (separation `All`); TrimBox and BleedBox set. Multi-page PDFs and page rotation supported.
+- Nothing inside the trim is changed, scaled or moved. Images are placed at their own saved dpi (72 dpi, with a warning, if none).
+- Trim marks in registration colour (separation `All`), at the offset you set (they may sit in the bleed, never inside the
+  trim); TrimBox and BleedBox set. Multi-page PDFs and page rotation supported.
 - Trim comes from the PDF's TrimBox, or crop marks found on the page when there isn't one, or a size you set by hand
   for each file.
   Crop marks are used only when they're unambiguous (thin marks in the margins at the corners, nothing drawn along the
   trim itself, trim covering most of the page); otherwise the page size is used and a warning says why.
+- Size check: pages the same size as supplied must all get the same trim, or the file is refused, so one stray page
+  can't be cut to a different size. The finished PDF is read back to confirm every page's trim and bleed.
 - Warns about anything that needs a check (no TrimBox, existing bleed, printable annotations, layers, image dpi/profile)
   and refuses password-protected or damaged PDFs.
 - Runs entirely in the browser, files never leave the PC. No install, no internet needed.

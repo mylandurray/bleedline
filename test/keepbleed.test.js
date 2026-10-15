@@ -9,7 +9,7 @@ const { checkOutput, box, pageStreams } = require('./invariants.js');
 const MM = fx.MM;
 const base = {
   bleedMm: 3, mode: 'mirror', sliverMm: 0.5, marks: true, markOffsetMm: 3, markLenMm: 5,
-  markWeightPt: 0.25, imageDpi: 300, useFileDpi: true, hideSeams: false, keepBleed: true,
+  markWeightPt: 0.25, keepBleed: true,
 };
 const run = (bytes, o = {}) => addBleed(PDFLib, bytes, 'pdf', { ...base, ...o });
 const has = (r, re) => r.warnings.some((w) => re.test(w));
@@ -52,8 +52,8 @@ test('5 mm of real bleed, 3 mm asked: drawn once, clipped to the BleedBox, unfli
   assert.ok(!/\/S\s*\/Transparency/.test(Buffer.from(r.bytes).toString('latin1')), 'no transparency');
 });
 
-test('kept bleed with seam hiding on still has no pieces or groups', async () => {
-  const r = await run(await bled([5, 5, 5, 5]), { hideSeams: true, marks: false });
+test('kept bleed has no pieces or groups', async () => {
+  const r = await run(await bled([5, 5, 5, 5]), { marks: false });
   const { text } = await content(r.bytes);
   assert.equal(dos(text), 1);
   assert.ok(!/\/S\s*\/Transparency/.test(Buffer.from(r.bytes).toString('latin1')));
@@ -131,7 +131,7 @@ test('PDF/X-1a source with kept bleed stays at its version', async () => {
   doc.getInfoDict().set(PDFLib.PDFName.of('GTS_PDFXVersion'), PDFLib.PDFString.of('PDF/X-1a:2001'));
   const bytes = await doc.save({ useObjectStreams: false });
   bytes[5] = '1'.charCodeAt(0); bytes[7] = '3'.charCodeAt(0);
-  const r = await run(bytes, { hideSeams: true });
+  const r = await run(bytes);
   assert.ok(has(r, /Kept the file's own/), dump(r));
   assert.equal(Buffer.from(r.bytes.subarray(0, 8)).toString('latin1'), '%PDF-1.3');
   assert.ok(!/\/S\s*\/Transparency/.test(Buffer.from(r.bytes).toString('latin1')));

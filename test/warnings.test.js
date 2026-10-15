@@ -4,29 +4,31 @@ const assert = require('node:assert/strict');
 const PDFLib = require('pdf-lib');
 const { addBleed } = require('../src/bleed.js');
 const fx = require('./fixtures.js');
+const { pageStreams } = require('./invariants.js');
 
 const MM = fx.MM;
 const base = {
   bleedMm: 3, mode: 'mirror', sliverMm: 0.5, marks: true, markOffsetMm: 3, markLenMm: 5,
-  markWeightPt: 0.25, imageDpi: 300, useFileDpi: true, hideSeams: false,
+  markWeightPt: 0.25,
 };
 const run = (bytes, kind, o = {}) => addBleed(PDFLib, bytes, kind, { ...base, ...o });
 const has = (r, re) => r.warnings.some((w) => re.test(w));
 const dump = (r) => r.warnings.join('|');
 
-test('marks inside the bleed are moved out to the bleed edge, with a warning', async () => {
+test('marks may sit inside the bleed, at the offset asked', async () => {
   const src = await fx.page({ media: [100 * MM, 100 * MM], content: fx.fill(fx.mmRect(0, 0, 100, 100)) });
   const r = await run(src, 'pdf', { bleedMm: 5, markOffsetMm: 2, markLenMm: 4 });
-  assert.ok(has(r, /Trim marks moved out to the bleed edge \(offset 2 → 5 mm\)/), dump(r));
-  // Page = trim + 2 * (max(bleed, offset + length) + 2 mm), so marks start at the bleed edge.
-  const margin = (5 + 4) * MM + 2 * MM;
+  assert.ok(!has(r, /moved/), dump(r));
+  // Page = trim + 2 * (max(bleed, offset + length) + 2 mm).
+  const margin = 8 * MM;
   const doc = await PDFLib.PDFDocument.load(r.bytes);
   const { width } = doc.getPage(0).getSize();
   assert.ok(Math.abs(width - (100 * MM + 2 * margin)) < 0.01, `width ${width}`);
-  const ok = await run(src, 'pdf', { bleedMm: 3, markOffsetMm: 3 });
-  assert.ok(!has(ok, /moved out/), dump(ok));
-  const off = await run(src, 'pdf', { bleedMm: 5, markOffsetMm: 2, marks: false });
-  assert.ok(!has(off, /moved out/), dump(off));
+  // A mark starts 2 mm below the trim corner, inside the 5 mm bleed.
+  const node = doc.getPage(0).node;
+  const text = pageStreams(doc, node).join('\n');
+  const starts = [...text.matchAll(/(-?[\d.]+) (-?[\d.]+) m\b/g)].map((m) => [+m[1], +m[2]]);
+  assert.ok(starts.some(([x, y]) => Math.abs(x - margin) < 0.01 && Math.abs(y - (margin - 2 * MM)) < 0.01), JSON.stringify(starts));
 });
 
 test('TrimBox equal to the page is worded as "same as the page", a missing one as "no TrimBox"', async () => {

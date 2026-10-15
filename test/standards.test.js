@@ -12,7 +12,7 @@ const MM = fx.MM;
 const N = (s) => PDFName.of(s);
 const base = {
   bleedMm: 3, mode: 'mirror', sliverMm: 0.5, marks: true, markOffsetMm: 3, markLenMm: 5,
-  markWeightPt: 0.25, imageDpi: 300, useFileDpi: true, hideSeams: false,
+  markWeightPt: 0.25,
 };
 const run = (bytes, kind, o = {}) => addBleed(PDFLib, bytes, kind, { ...base, ...o });
 const latin1 = (bytes) => Buffer.from(bytes).toString('latin1');
@@ -80,7 +80,7 @@ function xmpText(doc) {
 
 test('PDF/X-1a source: 1.3 header, classic xref, /ID, no groups, new InstanceID', async () => {
   const src = await claimed({ pdfx: 'PDF/X-1a:2001' });
-  const r = await run(src, 'pdf', { hideSeams: true });
+  const r = await run(src, 'pdf');
   await checkOutput(r.bytes, { trimMm: [100, 70], bleedMm: 3, marks: true, source: src, rawContent: true });
   const text = latin1(r.bytes);
   assert.ok(text.startsWith('%PDF-1.3\n'), text.slice(0, 9));
@@ -88,7 +88,6 @@ test('PDF/X-1a source: 1.3 header, classic xref, /ID, no groups, new InstanceID'
   assert.ok(!text.includes('/XRef'), 'no xref stream');
   assert.ok(/\nxref\n0 \d+\n/.test(text) && /\ntrailer\n<</.test(text), 'classic xref table and trailer');
   assert.ok(/\/ID \[/.test(text), '/ID written in the trailer');
-  assert.ok(r.warnings.some((w) => w === 'Seam hiding skipped to keep the file PDF/X-1a valid.'), r.warnings.join('|'));
   assert.ok(r.warnings.some((w) => /^Source is PDF\/X-1a: claim kept; re-verify in Acrobat Preflight/.test(w)), r.warnings.join('|'));
 
   const out = await load(r.bytes);
@@ -113,42 +112,38 @@ test('PDF/X-1a source: 1.3 header, classic xref, /ID, no groups, new InstanceID'
 
 test('PDF/A-1 claim from XMP only: no groups, no object streams', async () => {
   const src = await claimed({ pdfaPart: 1, version: '1.4' });
-  const r = await run(src, 'pdf', { hideSeams: true, marks: false });
+  const r = await run(src, 'pdf', { marks: false });
   const text = latin1(r.bytes);
   assert.ok(text.startsWith('%PDF-1.4\n'));
   assert.ok(!text.includes('/ObjStm'));
   assert.equal(hasGroup(await load(r.bytes)), false);
-  assert.ok(r.warnings.includes('Seam hiding skipped to keep the file PDF/A-1 valid.'), r.warnings.join('|'));
 });
 
-test('PDF/X-4 source: groups allowed, header kept, claim warning', async () => {
+test('PDF/X-4 source: header kept, claim warning', async () => {
   const src = await claimed({ pdfx: 'PDF/X-4', version: '1.6' });
-  const r = await run(src, 'pdf', { hideSeams: true, marks: false });
+  const r = await run(src, 'pdf', { marks: false });
   assert.ok(latin1(r.bytes).startsWith('%PDF-1.6\n'));
-  assert.equal(hasGroup(await load(r.bytes)), true);
-  assert.ok(!r.warnings.some((w) => /Seam hiding skipped/.test(w)));
+  assert.equal(hasGroup(await load(r.bytes)), false);
   assert.ok(r.warnings.includes('Source is PDF/X-4: claim kept; re-verify in Acrobat Preflight before sending.'), r.warnings.join('|'));
 });
 
-test('plain 1.7 file with hideSeams still gets groups and object streams', async () => {
+test('plain 1.7 file gets object streams and no groups', async () => {
   const src = await claimed({ xmp: false, id: false, version: '1.7' });
-  const r = await run(src, 'pdf', { hideSeams: true, marks: false });
+  const r = await run(src, 'pdf', { marks: false });
   const text = latin1(r.bytes);
   assert.ok(text.startsWith('%PDF-1.7\n'));
   assert.ok(text.includes('/ObjStm'));
   const out = await load(r.bytes);
-  assert.equal(hasGroup(out), true);
+  assert.equal(hasGroup(out), false);
   idOf(out);
-  assert.ok(!r.warnings.some((w) => /claim kept|Seam hiding skipped/.test(w)), r.warnings.join('|'));
+  assert.ok(!r.warnings.some((w) => /claim kept/.test(w)), r.warnings.join('|'));
 });
 
-test('plain 1.3 file with hideSeams is raised to 1.4; without groups it stays 1.3', async () => {
+test('plain 1.3 file stays 1.3, without object streams', async () => {
   const src = await claimed({ xmp: false, version: '1.3' });
-  const on = await run(src, 'pdf', { hideSeams: true, marks: false });
-  assert.ok(latin1(on.bytes).startsWith('%PDF-1.4\n'));
-  assert.ok(!latin1(on.bytes).includes('/ObjStm'), 'below 1.5: no object streams');
-  const off = await run(src, 'pdf', { hideSeams: false, marks: false });
+  const off = await run(src, 'pdf', { marks: false });
   assert.ok(latin1(off.bytes).startsWith('%PDF-1.3\n'));
+  assert.ok(!latin1(off.bytes).includes('/ObjStm'), 'below 1.5: no object streams');
 });
 
 test('catalog /Version above the header wins', async () => {
@@ -195,6 +190,6 @@ test('XMP properties written as attributes are edited too', async () => {
 test('image input gets a trailer /ID', async () => {
   const r = await run(fx.jpg({ width: 600, height: 300, dpi: 300 }), 'jpg');
   idOf(await load(r.bytes));
-  const r2 = await run(fx.png({ width: 60, height: 30 }), 'png', { useFileDpi: false, imageDpi: 150 });
+  const r2 = await run(fx.png({ width: 60, height: 30, dpi: 150 }), 'png');
   idOf(await load(r2.bytes));
 });
