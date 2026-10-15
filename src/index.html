@@ -90,7 +90,18 @@
   .item .ask { flex-basis: 100%; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px;
     background: var(--drop); color: var(--ink); }
   .item .ask input { width: 72px; }
-  #preview { flex: 1; width: 100%; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+  #preview { flex: 1; min-width: 0; display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 8px;
+    background: var(--panel); overflow: hidden; }
+  #pvBar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  #pvBar .grow { flex: 1; }
+  #pvBar button { padding: 3px 10px; }
+  #pvBar .seg label { padding: 3px 10px; white-space: nowrap; }
+  #pvLabel { color: var(--muted); min-width: 120px; text-align: center; }
+  #pvPages { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; gap: 16px; padding: 16px;
+    background: #525659; overflow: hidden; }
+  #pvPages canvas { background: #fff; box-shadow: 0 1px 5px rgba(0,0,0,.45); }
+  #pvPages .msg { color: #e6e9ef; }
+  #previewFrame { flex: 1; width: 100%; border: 0; }
   .hint { color: var(--muted); font-size: 12px; margin: 0; }
   .hint:empty, [hidden] { display: none !important; }
   body:not(.has-files) #preview, body:not(.has-files) #addBtn { display: none; }
@@ -148,7 +159,7 @@
 
   <div class="note">
     <p>PDF viewers, including this preview, can show thin lines where the bleed meets the artwork. They don't print.</p>
-    <label class="check" title="Only changes the preview. The downloaded PDF is never affected."><input type="checkbox" id="previewSeams">Hide lines in the preview</label>
+    <label class="check" title="Only smooths the preview picture. The PDF, the download and the full view are never changed."><input type="checkbox" id="previewSeams">Hide lines in the preview</label>
   </div>
   </div>
 
@@ -160,7 +171,21 @@
         <strong>Drop PDF, JPG or PNG files here</strong>
         <span>or click to choose</span>
       </div>
-      <iframe id="preview" title="Preview"></iframe>
+      <div id="preview">
+        <div id="pvBar">
+          <button id="pvPrev" title="Previous pages (←)" aria-label="Previous pages">◀</button>
+          <span id="pvLabel"></span>
+          <button id="pvNext" title="Next pages (→)" aria-label="Next pages">▶</button>
+          <span class="grow"></span>
+          <div class="seg" title="Pages shown side by side">
+            <label><input type="radio" name="spread" value="1"><span>1 page</span></label>
+            <label><input type="radio" name="spread" value="2" checked><span>2 pages</span></label>
+          </div>
+          <button id="pvOpen" title="Open the PDF you'll download in the browser's PDF viewer, to zoom or print">Open full view ↗</button>
+        </div>
+        <div id="pvPages"></div>
+        <iframe id="previewFrame" title="Preview" hidden></iframe>
+      </div>
     </div>
     <input type="file" id="file" accept=".pdf,.jpg,.jpeg,.png" multiple hidden>
   </div>
@@ -175,7 +200,9 @@
     <li>Set the bleed and trim-mark options on the left. Hover over an option for a short explanation.</li>
     <li>Drop one or more PDF, JPG or PNG files on the big drop area (or click it). Once files are loaded, drop more
         anywhere on the page or use <strong>+ Add files</strong>.</li>
-    <li>Each file is processed straight away and shown in the preview. Click <strong>Download</strong> to save
+    <li>Each file is processed straight away and shown in the preview, two pages side by side (switch to
+        <em>1 page</em> above the preview; ◀ ▶ or the arrow keys turn pages). <strong>Open full view</strong> opens it
+        in the browser's PDF viewer to zoom or print. Click <strong>Download</strong> to save
         <em>name</em>_bleed.pdf. Click a file in the list to preview it. The top bar shows the selected file's
         artwork size as supplied, the trim it gets, and the final size with bleed.</li>
     <li>Changing a setting re-processes all loaded files; changing a trim size re-processes only the selected file. A setting that isn't valid (empty, negative, or zero where it
@@ -217,8 +244,9 @@
     <li>PDF page content, fonts and images are copied unchanged (byte-for-byte for single-stream pages; multi-part page
         content is joined and recompressed losslessly), not rasterised. Nothing inside the trim is changed, scaled
         or moved. PDF viewers, including the preview, can show faint lines where the bleed meets the artwork; they
-        don't print. <strong>Hide lines in the preview</strong> (under the settings) paints the bleed 0.26 mm over the
-        trim edge in the preview only, so they disappear on screen; the downloaded PDF is always made without it.
+        don't print. <strong>Hide lines in the preview</strong> (under the settings) smooths out those
+        one-pixel lines in the preview panel's picture only. The PDF itself is never changed: the download and
+        <em>Open full view</em> are the real output.
         The preview is a guide: check the downloaded PDF before it goes to print.</li>
     <li>Output intent (PDF/X profile), XMP metadata, document info, transparency settings and layers are carried over.
         The XMP gets a new instance ID and modification date, since the output is a new file.</li>
@@ -261,6 +289,167 @@
   <p><kbd>F1</kbd> or <kbd>?</kbd> opens this help. <button id="helpClose">Close</button></p>
 </dialog>
 
+<script type="text/plain" id="pdfjsSrc">/*PDFJS*/</script>
+<script type="text/plain" id="pdfjsWorkerSrc">/*PDFJS_WORKER*/</script>
+<script>
+// Preview: PDF.js draws the output, two pages side by side by default, fitted to the panel.
+// If PDF.js can't start, the browser's own PDF viewer is used instead.
+const Preview = (() => {
+  const WASM = /*PDFJS_WASM*/;
+  const SPREAD_KEY = 'bleedline.spread';
+  const $ = (id) => document.getElementById(id);
+  let lib = null, worker = null, failed = false, starting = null;
+  let doc = null, task = null, url = null, geos = [], hide = false, first = 1, showToken = 0, drawToken = 0;
+  let spread = 2;
+  try { if (localStorage.getItem(SPREAD_KEY) === '1') spread = 1; } catch (e) {}
+
+  function start() {
+    if (!starting) starting = (async () => {
+      try {
+        lib = await import(URL.createObjectURL(new Blob([$('pdfjsSrc').textContent], { type: 'text/javascript' })));
+        // A data: URL, because pages opened from disk (file://) may not start module workers from blob: URLs.
+        const src = 'data:text/javascript,' + encodeURIComponent($('pdfjsWorkerSrc').textContent);
+        // One worker for the whole session, passed to every document so destroying a document leaves it running.
+        worker = new lib.PDFWorker({ port: new Worker(src, { type: 'module' }) });
+      } catch (e) {
+        console.error('PDF.js could not start; using the browser viewer.', e);
+        failed = true;
+      }
+    })();
+    return starting;
+  }
+  // Hands PDF.js its JPEG 2000 / JBIG2 decoders from the page instead of fetching them.
+  class Embedded {
+    async fetch({ kind, filename }) {
+      const b64 = kind === 'wasmUrl' && WASM[filename];
+      if (!b64) throw new Error(`${filename} is not embedded`);
+      return Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+    }
+  }
+
+  // bytes: the PDF to show (null to clear); u: its blob URL, for the full view;
+  // keep: stay on the same pages (the same file was re-made); g: each page's geometry (bleed.js `geo`).
+  async function show(bytes, u, keep, g) {
+    const t = ++showToken;
+    url = u;
+    geos = g || [];
+    if (!bytes) { setDoc(null, null); return; }
+    await start();
+    if (t !== showToken) return;
+    if (failed) {
+      $('pvPages').hidden = true;
+      $('previewFrame').hidden = false;
+      $('previewFrame').src = u + '#view=Fit';
+      return;
+    }
+    // The loading task owns the document: destroying it frees the document (PDFDocumentProxy has no destroy()).
+    const tk = lib.getDocument({ data: bytes.slice(), worker, BinaryDataFactory: Embedded, useWorkerFetch: false });
+    let d = null;
+    try { d = await tk.promise; } catch (e) { console.error(e); }
+    if (t !== showToken || !d) { tk.destroy(); if (t === showToken) setDoc(null, null); return; }
+    if (!keep) first = 1;
+    setDoc(d, tk);
+  }
+  function setDoc(d, tk) {
+    if (task && task !== tk) task.destroy();
+    doc = d; task = tk;
+    draw().catch((e) => console.error(e));
+  }
+
+  async function draw() {
+    const t = ++drawToken;
+    const area = $('pvPages');
+    const n = doc ? doc.numPages : 0;
+    const per = Math.max(1, Math.min(spread, n));
+    first = Math.max(1, Math.min(first, n || 1));
+    first -= (first - 1) % per; // spreads are pages 1-2, 3-4, ...
+    const last = Math.min(n, first + per - 1);
+    $('pvLabel').textContent = !n ? '' : n === 1 ? '1 page' : first === last ? `Page ${first} of ${n}` : `Pages ${first}–${last} of ${n}`;
+    $('pvPrev').disabled = first <= 1;
+    $('pvNext').disabled = last >= n;
+    $('pvOpen').disabled = !url;
+    if (!n) { area.replaceChildren(); return; }
+    const pages = [];
+    const current = doc;
+    for (let i = first; i <= last; i++) pages.push(await current.getPage(i));
+    if (t !== drawToken) return;
+    // Fit the spread into the panel.
+    const gap = 16, pad = 16;
+    const sizes = pages.map((p) => p.getViewport({ scale: 1 }));
+    const w = area.clientWidth - 2 * pad - gap * (pages.length - 1), h = area.clientHeight - 2 * pad;
+    const scale = Math.max(0.02, Math.min(w / sizes.reduce((a, v) => a + v.width, 0), h / Math.max(...sizes.map((v) => v.height))));
+    const dpr = window.devicePixelRatio || 1;
+    const canvases = [];
+    for (const p of pages) {
+      const vp = p.getViewport({ scale: scale * dpr });
+      const c = document.createElement('canvas');
+      c.width = Math.round(vp.width); c.height = Math.round(vp.height);
+      c.style.width = `${vp.width / dpr}px`; c.style.height = `${vp.height / dpr}px`;
+      try { await p.render({ canvas: c, viewport: vp }).promise; } catch (e) { if (t === drawToken) console.error(e); }
+      if (t !== drawToken) return;
+      if (hide && geos[p.pageNumber - 1]) hideSeams(c, vp, geos[p.pageNumber - 1]);
+      canvases.push(c);
+    }
+    area.replaceChildren(...canvases);
+  }
+
+  // On-screen only: viewers draw a faint line where the bleed pieces meet, along the trim lines
+  // (extended across the bleed). Each line is one pixel wide in the render, so repaint that pixel
+  // from its two neighbours. Nothing else in the picture changes, and the PDF is never touched.
+  // Trim marks sitting on those lines in the bleed are left alone.
+  function hideSeams(c, vp, g) {
+    if (!g.pieces) return;
+    const pt = (x, y) => vp.convertToViewportPoint(x, y);
+    const [l, t] = pt(g.x - g.b, g.y + g.h + g.b), [r, btm] = pt(g.x + g.w + g.b, g.y - g.b);
+    const x0 = Math.max(1, Math.floor(l)), x1 = Math.min(c.width - 1, Math.ceil(r));
+    const y0 = Math.max(1, Math.floor(t)), y1 = Math.min(c.height - 1, Math.ceil(btm));
+    const ctx = c.getContext('2d');
+    // Mark spans along a trim line, in canvas units along that line (marks run outwards from the trim corners).
+    const m = g.marks;
+    const markSpans = (a0, a1, toPx) => (!m ? [] : [[a0 - m.off - m.len, a0 - m.off], [a1 + m.off, a1 + m.off + m.len]]
+      .map(([u, v]) => { const [p, q] = [toPx(u), toPx(v)].sort((i, j) => i - j); return [p - 2, q + 2]; }));
+    const fix = (vertical, at, from, to, spans) => {
+      const i = Math.floor(at);
+      if (to <= from || i < 1 || i >= (vertical ? c.width : c.height) - 1) return;
+      const n = to - from;
+      const img = vertical ? ctx.getImageData(i - 1, from, 3, n) : ctx.getImageData(from, i - 1, n, 3);
+      const d = img.data;
+      for (let k = 0; k < n; k++) {
+        if (spans.some(([p, q]) => from + k >= p && from + k <= q)) continue;
+        const [a, mid, z] = vertical ? [k * 12, k * 12 + 4, k * 12 + 8] : [k * 4, (n + k) * 4, (2 * n + k) * 4];
+        for (let ch = 0; ch < 4; ch++) d[mid + ch] = (d[a + ch] + d[z + ch]) / 2;
+      }
+      ctx.putImageData(img, vertical ? i - 1 : from, vertical ? from : i - 1);
+    };
+    for (const x of [g.x, g.x + g.w]) fix(true, pt(x, g.y)[0], y0, y1, markSpans(g.y, g.y + g.h, (v) => pt(x, v)[1]));
+    for (const y of [g.y, g.y + g.h]) fix(false, pt(g.x, y)[1], x0, x1, markSpans(g.x, g.x + g.w, (u) => pt(u, y)[0]));
+  }
+
+  const redraw = () => draw().catch((e) => console.error(e));
+  const step = (dir) => { if (doc) { first += dir * Math.min(spread, doc.numPages); redraw(); } };
+  $('pvPrev').onclick = () => step(-1);
+  $('pvNext').onclick = () => step(1);
+  document.addEventListener('keydown', (e) => {
+    if (/INPUT|TEXTAREA|SELECT/.test(e.target.tagName) || document.querySelector('dialog[open]')) return;
+    if (e.key === 'ArrowLeft') step(-1);
+    if (e.key === 'ArrowRight') step(1);
+  });
+  for (const r of document.querySelectorAll('input[name=spread]')) {
+    r.checked = +r.value === spread;
+    r.onchange = () => {
+      spread = +r.value;
+      try { localStorage.setItem(SPREAD_KEY, String(spread)); } catch (e) {}
+      redraw();
+    };
+  }
+  $('pvOpen').onclick = () => { if (url) window.open(url, '_blank'); };
+  let resizeTimer;
+  new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(redraw, 120); }).observe($('pvPages'));
+  // Hide the seam lines in the preview (on-screen only).
+  function setHide(on) { hide = !!on; redraw(); }
+  return { show, setHide };
+})();
+</script>
 <script>/*PDFLIB*/</script>
 <script>/*BLEED*/</script>
 <script>
@@ -271,7 +460,7 @@
   const DPI_KEY = 'bleedline.dpi'; // last dpi entered for an image with none saved
   const SEAMS_KEY = 'bleedline.previewSeams';
   // entry.trim = { mode: 'auto' | 'set', w, h } (mm): each file has its own trim setting.
-  const files = []; // { file, kind, trim, dpi, url, viewUrl, urlRun, run, opts, pages, error, el }
+  const files = []; // { file, kind, trim, dpi, url, bytes, urlRun, run, opts, pages, error, el }
   let selected = null;
 
   // ---- settings ----
@@ -406,11 +595,9 @@
       if (run !== entry.run) return;
       const res = await Bleedline.addBleed(PDFLib, bytes, entry.kind, opts);
       if (run !== entry.run) return;
-      // Hiding the lines changes the artwork, so it is made separately and only ever shown, never downloaded.
-      const view = $('previewSeams').checked ? await Bleedline.addBleed(PDFLib, bytes, entry.kind, { ...opts, previewSeams: true }) : null;
-      if (run !== entry.run) return;
       const blob = (r) => URL.createObjectURL(new Blob([r.bytes], { type: 'application/pdf' }));
-      setUrls(entry, blob(res), view && blob(view));
+      setUrls(entry, blob(res), null);
+      entry.bytes = res.bytes;
       entry.urlRun = run;
       entry.opts = opts;
       const p = res.pages[0];
@@ -476,11 +663,14 @@
   function setUrls(entry, url, viewUrl) {
     for (const u of [entry.url, entry.viewUrl]) if (u) URL.revokeObjectURL(u);
     entry.url = url; entry.viewUrl = viewUrl;
+    if (!url) entry.bytes = null;
   }
+  let shown = null; // the file the preview is showing, so a re-run keeps its page
   function showPreview(entry) {
     showTrim(entry);
-    const u = entry && (entry.viewUrl || entry.url);
-    $('preview').src = u ? u + '#view=Fit' : 'about:blank';
+    const u = entry && entry.url;
+    Preview.show(u ? entry.bytes : null, u, entry === shown, u && entry.pages.map((p) => p.geo));
+    shown = entry;
   }
   function download(entry) {
     if (!entry.url || entry.run !== entry.urlRun) return; // never save output from older settings
@@ -512,9 +702,10 @@
   drop.onclick = () => $('file').click();
   $('addBtn').onclick = () => $('file').click();
   try { $('previewSeams').checked = localStorage.getItem(SEAMS_KEY) === '1'; } catch (e) {}
+  Preview.setHide($('previewSeams').checked);
   $('previewSeams').onchange = () => {
     try { localStorage.setItem(SEAMS_KEY, $('previewSeams').checked ? '1' : '0'); } catch (e) {}
-    schedule(files);
+    Preview.setHide($('previewSeams').checked);
   };
   $('file').onchange = (e) => { addFiles(e.target.files); e.target.value = ''; };
   ['dragenter', 'dragover'].forEach((t) => document.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add('over'); }));

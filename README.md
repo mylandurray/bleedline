@@ -14,7 +14,7 @@ Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
   PDF/A-1 it uses no object streams or transparency. A warning reminds you to re-verify in Acrobat Preflight.
 - PDFs that already have enough bleed beyond a real TrimBox keep their own artwork as the bleed (on by default; it falls
   back to mirroring, with a warning, if any side is short).
-- Nothing inside the trim is changed, scaled or moved. (An optional *Hide lines in the preview* hides viewer hairlines
+- Nothing inside the trim is changed, scaled or moved. (An optional *Hide lines in the preview* smooths viewer hairlines
   on screen only; downloads never include it.) Images are placed at their own saved dpi; if there is none, the page asks for one
   (remembering the last dpi entered).
 - Trim marks in registration colour (separation `All`), at the offset you set (they may sit in the bleed, never inside the
@@ -27,6 +27,8 @@ Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
   can't be cut to a different size. The finished PDF is read back to confirm every page's trim and bleed.
 - Warns about anything that needs a check (no TrimBox, existing bleed, printable annotations, layers, image dpi/profile)
   and refuses password-protected or damaged PDFs.
+- Preview shows two pages side by side (or one), fitted to the window, drawn with PDF.js; *Open full view* opens the
+  browser's own PDF viewer for zoom and print.
 - Runs entirely in the browser, files never leave the PC. No install, no internet needed.
 
 ## Use
@@ -46,4 +48,5 @@ npm run build
 
 `npm test` runs the unit tests. `npm run check-samples` renders the PDFs in `test/samples/` (not in git) before and after with Ghostscript and reports any pixel differences inside the trim; it prints install instructions if Ghostscript is missing.
 
-`index.html` and `AddBleed.html` (the old name, for existing links) just redirect to `Bleedline.html`. `build.mjs` inlines `pdf-lib` and `src/bleed.js` into `src/index.html` to produce the one-file `Bleedline.html`.
+`index.html` and `AddBleed.html` (the old name, for existing links) just redirect to `Bleedline.html`. `build.mjs` inlines `pdf-lib`, PDF.js (`pdfjs-dist`, with its JPEG 2000 / JBIG2 decoders) and `src/bleed.js` into
+`src/index.html` to produce the one-file `Bleedline.html` (about 2.7 MB).
