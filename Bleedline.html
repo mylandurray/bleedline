@@ -159,7 +159,7 @@
 
   <div class="note">
     <p>PDF viewers, including this preview, can show thin lines where the bleed meets the artwork. They don't print.</p>
-    <label class="check" title="Only changes the preview panel. The downloaded PDF and the full view are never affected."><input type="checkbox" id="previewSeams">Hide lines in the preview</label>
+    <label class="check" title="Only smooths the preview picture. The PDF, the download and the full view are never changed."><input type="checkbox" id="previewSeams">Hide lines in the preview</label>
   </div>
   </div>
 
@@ -244,9 +244,9 @@
     <li>PDF page content, fonts and images are copied unchanged (byte-for-byte for single-stream pages; multi-part page
         content is joined and recompressed losslessly), not rasterised. Nothing inside the trim is changed, scaled
         or moved. PDF viewers, including the preview, can show faint lines where the bleed meets the artwork; they
-        don't print. <strong>Hide lines in the preview</strong> (under the settings) paints the bleed 1 mm over the
-        trim edge in the preview panel only, so they disappear on screen. The downloaded PDF, and <em>Open full
-        view</em>, are always the real output without it.
+        don't print. <strong>Hide lines in the preview</strong> (under the settings) smooths out those
+        one-pixel lines in the preview panel's picture only. The PDF itself is never changed: the download and
+        <em>Open full view</em> are the real output.
         The preview is a guide: check the downloaded PDF before it goes to print.</li>
     <li>Output intent (PDF/X profile), XMP metadata, document info, transparency settings and layers are carried over.
         The XMP gets a new instance ID and modification date, since the output is a new file.</li>
@@ -285,7 +285,7 @@
         embedded losslessly (greyscale, 16-bit and indexed stay as they are). PNGs with transparency are decoded to
         8-bit RGB with an alpha mask, and you'll get a warning if that changes anything.</li>
   </ul>
-  <p class="hint">Build 1d5fecf, 2026-10-15</p>
+  <p class="hint">Build 9103d5a-dirty, 2026-10-15</p>
   <p><kbd>F1</kbd> or <kbd>?</kbd> opens this help. <button id="helpClose">Close</button></p>
 </dialog>
 
@@ -355,7 +355,7 @@ const Preview = (() => {
   const SPREAD_KEY = 'bleedline.spread';
   const $ = (id) => document.getElementById(id);
   let lib = null, worker = null, failed = false, starting = null;
-  let doc = null, task = null, url = null, first = 1, showToken = 0, drawToken = 0;
+  let doc = null, task = null, url = null, geos = [], hide = false, first = 1, showToken = 0, drawToken = 0;
   let spread = 2;
   try { if (localStorage.getItem(SPREAD_KEY) === '1') spread = 1; } catch (e) {}
 
@@ -384,10 +384,11 @@ const Preview = (() => {
   }
 
   // bytes: the PDF to show (null to clear); u: its blob URL, for the full view;
-  // keep: stay on the same pages (the same file was re-made).
-  async function show(bytes, u, keep) {
+  // keep: stay on the same pages (the same file was re-made); g: each page's geometry (bleed.js `geo`).
+  async function show(bytes, u, keep, g) {
     const t = ++showToken;
     url = u;
+    geos = g || [];
     if (!bytes) { setDoc(null, null); return; }
     await start();
     if (t !== showToken) return;
@@ -442,9 +443,42 @@ const Preview = (() => {
       c.style.width = `${vp.width / dpr}px`; c.style.height = `${vp.height / dpr}px`;
       try { await p.render({ canvas: c, viewport: vp }).promise; } catch (e) { if (t === drawToken) console.error(e); }
       if (t !== drawToken) return;
+      if (hide && geos[p.pageNumber - 1]) hideSeams(c, vp, geos[p.pageNumber - 1]);
       canvases.push(c);
     }
     area.replaceChildren(...canvases);
+  }
+
+  // On-screen only: viewers draw a faint line where the bleed pieces meet, along the trim lines
+  // (extended across the bleed). Each line is one pixel wide in the render, so repaint that pixel
+  // from its two neighbours. Nothing else in the picture changes, and the PDF is never touched.
+  // Trim marks sitting on those lines in the bleed are left alone.
+  function hideSeams(c, vp, g) {
+    if (!g.pieces) return;
+    const pt = (x, y) => vp.convertToViewportPoint(x, y);
+    const [l, t] = pt(g.x - g.b, g.y + g.h + g.b), [r, btm] = pt(g.x + g.w + g.b, g.y - g.b);
+    const x0 = Math.max(1, Math.floor(l)), x1 = Math.min(c.width - 1, Math.ceil(r));
+    const y0 = Math.max(1, Math.floor(t)), y1 = Math.min(c.height - 1, Math.ceil(btm));
+    const ctx = c.getContext('2d');
+    // Mark spans along a trim line, in canvas units along that line (marks run outwards from the trim corners).
+    const m = g.marks;
+    const markSpans = (a0, a1, toPx) => (!m ? [] : [[a0 - m.off - m.len, a0 - m.off], [a1 + m.off, a1 + m.off + m.len]]
+      .map(([u, v]) => { const [p, q] = [toPx(u), toPx(v)].sort((i, j) => i - j); return [p - 2, q + 2]; }));
+    const fix = (vertical, at, from, to, spans) => {
+      const i = Math.floor(at);
+      if (to <= from || i < 1 || i >= (vertical ? c.width : c.height) - 1) return;
+      const n = to - from;
+      const img = vertical ? ctx.getImageData(i - 1, from, 3, n) : ctx.getImageData(from, i - 1, n, 3);
+      const d = img.data;
+      for (let k = 0; k < n; k++) {
+        if (spans.some(([p, q]) => from + k >= p && from + k <= q)) continue;
+        const [a, mid, z] = vertical ? [k * 12, k * 12 + 4, k * 12 + 8] : [k * 4, (n + k) * 4, (2 * n + k) * 4];
+        for (let ch = 0; ch < 4; ch++) d[mid + ch] = (d[a + ch] + d[z + ch]) / 2;
+      }
+      ctx.putImageData(img, vertical ? i - 1 : from, vertical ? from : i - 1);
+    };
+    for (const x of [g.x, g.x + g.w]) fix(true, pt(x, g.y)[0], y0, y1, markSpans(g.y, g.y + g.h, (v) => pt(x, v)[1]));
+    for (const y of [g.y, g.y + g.h]) fix(false, pt(g.x, y)[1], x0, x1, markSpans(g.x, g.x + g.w, (u) => pt(u, y)[0]));
   }
 
   const redraw = () => draw().catch((e) => console.error(e));
@@ -467,7 +501,9 @@ const Preview = (() => {
   $('pvOpen').onclick = () => { if (url) window.open(url, '_blank'); };
   let resizeTimer;
   new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(redraw, 120); }).observe($('pvPages'));
-  return { show };
+  // Hide the seam lines in the preview (on-screen only).
+  function setHide(on) { hide = !!on; redraw(); }
+  return { show, setHide };
 })();
 </script>
 <script>!function(t,e){"object"==typeof exports&&"undefined"!=typeof module?e(exports):"function"==typeof define&&define.amd?define(["exports"],e):e((t=t||self).PDFLib={})}(this,(function(t){"use strict";
@@ -539,16 +575,11 @@ const Preview = (() => {
 
   // One axis of a cell transform: returns [scale, offset] mapping visual u -> output.
   // side -1 = before the trim, 0 = inside, +1 = after.
-  // `off` shifts the bleed copy towards the trim so its own artwork edge sits
-  // beyond the piece's clip (preview seam hiding only, see addBleed).
-  function axis(side, o, len, k, off = 0) {
+  function axis(side, o, len, k) {
     if (side === 0) return [1, o];
-    if (side < 0) return [-k, o + off];
-    return [-k, o + len - off + k * len];
+    if (side < 0) return [-k, o];
+    return [-k, o + len + k * len];
   }
-
-  // Overlap (pt, ~0.26 mm) that hides on-screen anti-aliasing seams in the preview.
-  const SEAM = 0.75;
 
 
   // PDF boxes may list their corners in any order, so normalise to min/max.
@@ -1158,13 +1189,13 @@ const Preview = (() => {
   /**
    * opts: { bleedMm, mode: 'mirror'|'stretch', sliverMm, marks, markOffsetMm,
    *         markLenMm, markWeightPt,
-   *         previewSeams (PREVIEW ONLY: paints the bleed 0.26 mm over the trim edge to hide on-screen
-   *           hairlines; this changes the artwork, so output made with it must never be downloaded),
    *         keepBleed (true = use the PDF's own bleed when its TrimBox has enough on all sides),
    *         trimWMm, trimHMm (both > 0 = manual trim size, centred),
    *         imageDpi (images with no dpi saved only; without it they throw an Error with code 'NEED_DPI') }
    * kind: 'pdf' | 'png' | 'jpg'
-   * Returns { bytes, pages: [{wMm, hMm, srcTrim (PDF only: [x0,y0,x1,y1] in source page space)}], warnings: [string] }
+   * Returns { bytes, pages: [{wMm, hMm, artWMm, artHMm, from, srcTrim (PDF only: [x0,y0,x1,y1] in source page space),
+   *   geo: output page geometry in pt { pw, ph, x, y, w, h (trim), b (bleed), pieces (bleed made of pieces, so
+   *   viewers may show seams along the trim lines), marks: { off, len } or null }}], warnings: [string] }
    */
   async function addBleed(PDFLib, srcBytes, kind, opts) {
     validateOpts(opts, kind);
@@ -1519,39 +1550,22 @@ const Preview = (() => {
         const k = opts.mode === 'stretch' ? b / sliver : 1;
 
         // Each piece is clipped exactly to its own cell, so the trim area is the original artwork.
-        // Viewers show faint hairlines where pieces meet (they don't print).
-        // previewSeams hides them for on-screen viewing: the artwork goes down first, then each
-        // bleed piece is painted over it as a transparency group (rendered flat, then clipped,
-        // with its own edges beyond the clip), reaching SEAM pt over the trim edge.
-        // previewSeams: true, or the overlap in pt (wider for small on-screen previews).
-        const hide = opts.previewSeams === true || opts.previewSeams > 0;
-        const ov = !hide ? 0 : opts.previewSeams > 0 ? opts.previewSeams : SEAM, g = 2 * ov;
-        const pw = W + 2 * margin, ph = H + 2 * margin;
-        const span = (side, o, len, ext) => (side < 0 ? [o - b, b + ext] : side > 0 ? [o + len - ext, b + ext] : [o, len]);
+        // (Viewers may show faint hairlines where pieces meet, along the trim lines; they don't print.
+        // The page's preview hides them on screen.)
+        const span = (side, o, len) => (side < 0 ? [o - b, b] : side > 0 ? [o + len, b] : [o, len]);
         const cells = [[0, 0]];
-        for (const j of [-1, 0, 1]) for (const i of [-1, 0, 1]) if (!i !== !j) cells.push([i, j]);
-        for (const j of [-1, 1]) for (const i of [-1, 1]) cells.push([i, j]);
+        for (const j of [-1, 0, 1]) for (const i of [-1, 0, 1]) if (i || j) cells.push([i, j]);
         for (const [i, j] of cells) {
           if (b <= 0 && (i || j)) continue;
-          const [sx, ex] = axis(i, ox, W, k, i ? g : 0);
-          const [sy, ey] = axis(j, oy, H, k, j ? g : 0);
-          const m = mul(s.base, [sx, 0, 0, sy, ex, ey]);
-          const [cx, cw] = span(i, ox, W, i ? ov : 0);
-          const [cy, ch] = span(j, oy, H, j ? ov : 0);
-          let xo = name, pre = [concatTransformationMatrix(...m)];
-          if (hide && (i || j)) {
-            const grp = ctx.register(ctx.flateStream(`${m.map((v) => +v.toFixed(6)).join(' ')} cm /Art Do`, {
-              Type: 'XObject', Subtype: 'Form', BBox: [0, 0, pw, ph],
-              Group: { S: 'Transparency' }, Resources: { XObject: { Art: s.ref } },
-            }));
-            xo = page.node.newXObject('Bleed', grp);
-            pre = [];
-          }
+          const [sx, ex] = axis(i, ox, W, k);
+          const [sy, ey] = axis(j, oy, H, k);
+          const [cx, cw] = span(i, ox, W);
+          const [cy, ch] = span(j, oy, H);
           page.pushOperators(
             pushGraphicsState(),
             rectangle(cx, cy, cw, ch), clip(), endPath(),
-            ...pre,
-            drawObject(xo),
+            concatTransformationMatrix(...mul(s.base, [sx, 0, 0, sy, ex, ey])),
+            drawObject(name),
             popGraphicsState(),
           );
         }
@@ -1576,7 +1590,9 @@ const Preview = (() => {
 
       page.setTrimBox(ox, oy, W, H);
       page.setBleedBox(ox - b, oy - b, W + 2 * b, H + 2 * b);
-      info.push({ wMm: W / MM, hMm: H / MM, artWMm: s.artW / MM, artHMm: s.artH / MM, from: s.from, srcTrim: s.srcTrim });
+      info.push({ wMm: W / MM, hMm: H / MM, artWMm: s.artW / MM, artHMm: s.artH / MM, from: s.from, srcTrim: s.srcTrim,
+        geo: { pw: W + 2 * margin, ph: H + 2 * margin, x: ox, y: oy, w: W, h: H, b, pieces: !!s.ref && !s.keep && b > 0,
+          marks: marks ? { off: markOff, len: markLen } : null } });
     }
 
     function addColorSpace(node, ref) {
@@ -1617,10 +1633,8 @@ const Preview = (() => {
   const KEY = 'bleedline.settings', OLD_KEY = 'addbleed.settings';
   const DPI_KEY = 'bleedline.dpi'; // last dpi entered for an image with none saved
   const SEAMS_KEY = 'bleedline.previewSeams';
-  // Overlap for the lines-hidden preview: at least ~1.5 screen pixels at the panel's usual size, or PDF.js still shows lines.
-  const PREVIEW_SEAM_PT = 3;
   // entry.trim = { mode: 'auto' | 'set', w, h } (mm): each file has its own trim setting.
-  const files = []; // { file, kind, trim, dpi, url, viewUrl, urlRun, run, opts, pages, error, el }
+  const files = []; // { file, kind, trim, dpi, url, bytes, urlRun, run, opts, pages, error, el }
   let selected = null;
 
   // ---- settings ----
@@ -1755,12 +1769,9 @@ const Preview = (() => {
       if (run !== entry.run) return;
       const res = await Bleedline.addBleed(PDFLib, bytes, entry.kind, opts);
       if (run !== entry.run) return;
-      // Hiding the lines changes the artwork, so it is made separately and only ever shown, never downloaded.
-      const view = $('previewSeams').checked ? await Bleedline.addBleed(PDFLib, bytes, entry.kind, { ...opts, previewSeams: PREVIEW_SEAM_PT }) : null;
-      if (run !== entry.run) return;
       const blob = (r) => URL.createObjectURL(new Blob([r.bytes], { type: 'application/pdf' }));
       setUrls(entry, blob(res), null);
-      entry.viewBytes = (view || res).bytes;
+      entry.bytes = res.bytes;
       entry.urlRun = run;
       entry.opts = opts;
       const p = res.pages[0];
@@ -1826,14 +1837,13 @@ const Preview = (() => {
   function setUrls(entry, url, viewUrl) {
     for (const u of [entry.url, entry.viewUrl]) if (u) URL.revokeObjectURL(u);
     entry.url = url; entry.viewUrl = viewUrl;
-    if (!url) entry.viewBytes = null;
+    if (!url) entry.bytes = null;
   }
   let shown = null; // the file the preview is showing, so a re-run keeps its page
   function showPreview(entry) {
     showTrim(entry);
-    // The panel shows the lines-hidden copy when that's on; full view always opens the real output.
     const u = entry && entry.url;
-    Preview.show(u ? entry.viewBytes : null, u, entry === shown);
+    Preview.show(u ? entry.bytes : null, u, entry === shown, u && entry.pages.map((p) => p.geo));
     shown = entry;
   }
   function download(entry) {
@@ -1866,9 +1876,10 @@ const Preview = (() => {
   drop.onclick = () => $('file').click();
   $('addBtn').onclick = () => $('file').click();
   try { $('previewSeams').checked = localStorage.getItem(SEAMS_KEY) === '1'; } catch (e) {}
+  Preview.setHide($('previewSeams').checked);
   $('previewSeams').onchange = () => {
     try { localStorage.setItem(SEAMS_KEY, $('previewSeams').checked ? '1' : '0'); } catch (e) {}
-    schedule(files);
+    Preview.setHide($('previewSeams').checked);
   };
   $('file').onchange = (e) => { addFiles(e.target.files); e.target.value = ''; };
   ['dragenter', 'dragover'].forEach((t) => document.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add('over'); }));

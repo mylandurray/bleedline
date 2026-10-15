@@ -158,11 +158,17 @@ test('centre clip is the TrimBox and no transparency group', async () => {
   assert.equal(await hasTransparencyGroup(r.bytes), false);
 });
 
-test('previewSeams (preview only) adds transparency groups; without it there are none', async () => {
+test('result reports each page\'s geometry for the preview', async () => {
   const trim = fx.mmRect(10, 10, 90, 60);
   const src = await fx.page({ media: [120 * MM, 90 * MM], trim, content: fx.fill(trim, [1, 0, 0, 0]) });
-  assert.equal(await hasTransparencyGroup((await run(src, 'pdf', { marks: false, previewSeams: true })).bytes), true);
-  assert.equal(await hasTransparencyGroup((await run(src, 'pdf', { marks: false })).bytes), false);
+  const r = await run(src, 'pdf', { bleedMm: 3, markOffsetMm: 2, markLenMm: 4, keepBleed: false });
+  const g = r.pages[0].geo;
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
+  assert.ok(near(g.w, 90 * MM) && near(g.h, 60 * MM) && near(g.b, 3 * MM), JSON.stringify(g));
+  assert.ok(near(g.x, 8 * MM) && near(g.pw, 90 * MM + 16 * MM), JSON.stringify(g)); // margin = max(3, 2 + 4) + 2 mm
+  assert.equal(g.pieces, true);
+  assert.ok(near(g.marks.off, 2 * MM) && near(g.marks.len, 4 * MM));
+  assert.equal(await hasTransparencyGroup(r.bytes), false);
 });
 
 // ---------- page content copied once (phase 4a) ----------
