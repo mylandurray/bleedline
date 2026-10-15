@@ -27,6 +27,8 @@ Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
   can't be cut to a different size. The finished PDF is read back to confirm every page's trim and bleed.
 - Warns about anything that needs a check (no TrimBox, existing bleed, printable annotations, layers, image dpi/profile)
   and refuses password-protected or damaged PDFs.
+- Preview shows two pages side by side (or one), fitted to the window, drawn with PDF.js; *Open full view* opens the
+  browser's own PDF viewer for zoom and print.
 - Runs entirely in the browser, files never leave the PC. No install, no internet needed.
 
 ## Use
@@ -46,4 +48,5 @@ npm run build
 
 `npm test` runs the unit tests. `npm run check-samples` renders the PDFs in `test/samples/` (not in git) before and after with Ghostscript and reports any pixel differences inside the trim; it prints install instructions if Ghostscript is missing.
 
-`index.html` and `AddBleed.html` (the old name, for existing links) just redirect to `Bleedline.html`. `build.mjs` inlines `pdf-lib` and `src/bleed.js` into `src/index.html` to produce the one-file `Bleedline.html`.
+`index.html` and `AddBleed.html` (the old name, for existing links) just redirect to `Bleedline.html`. `build.mjs` inlines `pdf-lib`, PDF.js (`pdfjs-dist`, with its JPEG 2000 / JBIG2 decoders) and `src/bleed.js` into
+`src/index.html` to produce the one-file `Bleedline.html` (about 2.7 MB).

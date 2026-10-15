@@ -20,7 +20,15 @@ function stamp() {
   }
 }
 
+// PDF.js for the preview: its module and worker go in as text (loaded from blob URLs at run time),
+// and the JPEG 2000 / JBIG2 decoders as base64, so the preview works offline too.
+const pdfjs = (f) => new URL(`./node_modules/pdfjs-dist/${f}`, import.meta.url);
+const wasm = Object.fromEntries(['openjpeg.wasm', 'jbig2.wasm'].map((f) => [f, readFileSync(pdfjs(`wasm/${f}`)).toString('base64')]));
+
 const html = read('./src/index.html')
+  .replace('/*PDFJS*/', () => safe(readFileSync(pdfjs('build/pdf.min.mjs'), 'utf8')))
+  .replace('/*PDFJS_WORKER*/', () => safe(readFileSync(pdfjs('build/pdf.worker.min.mjs'), 'utf8')))
+  .replace('/*PDFJS_WASM*/', () => JSON.stringify(wasm))
   .replace('/*PDFLIB*/', () => safe(read('./node_modules/pdf-lib/dist/pdf-lib.min.js')))
   .replace('/*BUILD*/', () => stamp())
   .replace('/*BLEED*/', () => safe(read('./src/bleed.js')));
