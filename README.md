@@ -14,7 +14,8 @@ Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
   PDF/A-1 it uses no object streams or transparency. A warning reminds you to re-verify in Acrobat Preflight.
 - PDFs that already have enough bleed beyond a real TrimBox keep their own artwork as the bleed (on by default; it falls
   back to mirroring, with a warning, if any side is short).
-- Nothing inside the trim is changed, scaled or moved. Images are placed at their own saved dpi (72 dpi, with a warning, if none).
+- Nothing inside the trim is changed, scaled or moved. Images are placed at their own saved dpi; if there is none, the page asks for one
+  (remembering the last dpi entered).
 - Trim marks in registration colour (separation `All`), at the offset you set (they may sit in the bleed, never inside the
   trim); TrimBox and BleedBox set. Multi-page PDFs and page rotation supported.
 - Trim comes from the PDF's TrimBox, or crop marks found on the page when there isn't one, or a size you set by hand

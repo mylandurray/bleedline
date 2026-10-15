@@ -95,11 +95,19 @@ test('mark settings are only checked when marks are on', async () => {
   await run(src, 'pdf', { marks: false, markLenMm: 0 });
 });
 
-test('image with no dpi saved is placed at 72 dpi, with a warning', async () => {
-  // 300 x 150 px at 72 dpi = 105.83 x 52.92 mm
-  const r = await run(fx.png({ width: 300, height: 150 }), 'png');
-  await checkOutput(r.bytes, { trimMm: [300 / 72 * 25.4, 150 / 72 * 25.4], bleedMm: 3, marks: true, pages: 1 });
-  assert.ok(r.warnings.some((w) => /no dpi saved, so it is placed at 72 dpi/.test(w)), r.warnings.join('|'));
+test('image with no dpi saved asks for one, then uses the dpi entered', async () => {
+  const png = fx.png({ width: 300, height: 150 });
+  await assert.rejects(run(png, 'png'), (e) => e.code === 'NEED_DPI' && /no dpi saved/.test(e.message));
+  await assert.rejects(run(png, 'png', { imageDpi: 0 }), /dpi must be more than 0/);
+  // 300 x 150 px at 150 dpi = 50.8 x 25.4 mm
+  const r = await run(png, 'png', { imageDpi: 150 });
+  await checkOutput(r.bytes, { trimMm: [50.8, 25.4], bleedMm: 3, marks: true, pages: 1 });
+  assert.ok(r.warnings.some((w) => /placed at 150 dpi as entered/.test(w)), r.warnings.join('|'));
+});
+
+test("an image's own dpi wins over the dpi entered", async () => {
+  const r = await run(fx.jpg({ width: 600, height: 300, dpi: 300 }), 'jpg', { imageDpi: 72 });
+  await checkOutput(r.bytes, { trimMm: [50.8, 25.4], bleedMm: 3, marks: true, pages: 1 });
 });
 
 test('half-filled or non-positive trim W/H throws', async () => {

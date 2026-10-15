@@ -56,8 +56,6 @@
     return [-k, o + len + k * len];
   }
 
-  // Images with no resolution saved are placed at 72 dpi, as Photoshop and Acrobat do.
-  const DEFAULT_DPI = 72;
 
   // PDF boxes may list their corners in any order, so normalise to min/max.
   const rect = (r) => ({
@@ -655,6 +653,7 @@
       if (!(num(opts.markOffsetMm) && opts.markOffsetMm >= 0)) bad('Offset from trim must be 0 mm or more.');
     }
     const given = (v) => v !== undefined && v !== null;
+    if (given(opts.imageDpi) && !(num(opts.imageDpi) && opts.imageDpi > 0)) bad('Image dpi must be more than 0.');
     if (given(opts.trimWMm) || given(opts.trimHMm)) {
       if (!(given(opts.trimWMm) && given(opts.trimHMm))) bad('Set both the trim width and height, or neither.');
       if (!(num(opts.trimWMm) && opts.trimWMm > 0 && num(opts.trimHMm) && opts.trimHMm > 0))
@@ -666,7 +665,8 @@
    * opts: { bleedMm, mode: 'mirror'|'stretch', sliverMm, marks, markOffsetMm,
    *         markLenMm, markWeightPt,
    *         keepBleed (true = use the PDF's own bleed when its TrimBox has enough on all sides),
-   *         trimWMm, trimHMm (both > 0 = manual trim size, centred) }
+   *         trimWMm, trimHMm (both > 0 = manual trim size, centred),
+   *         imageDpi (images with no dpi saved only; without it they throw an Error with code 'NEED_DPI') }
    * kind: 'pdf' | 'png' | 'jpg'
    * Returns { bytes, pages: [{wMm, hMm, srcTrim (PDF only: [x0,y0,x1,y1] in source page space)}], warnings: [string] }
    */
@@ -898,9 +898,15 @@
       });
     } else {
       const img = kind === 'png' ? await embedPng(srcBytes) : embedJpeg(srcBytes);
-      const dpi = img.dpi || DEFAULT_DPI;
+      // The file's own dpi always wins; imageDpi is only for images that have none saved.
+      if (!img.dpi && !(opts.imageDpi > 0)) {
+        const e = new Error('Image has no dpi saved. Enter the dpi it should be placed at.');
+        e.code = 'NEED_DPI';
+        throw e;
+      }
+      const dpi = img.dpi || opts.imageDpi;
       warn(img.dpi ? `Image placed at its own ${Math.round(dpi)} dpi.`
-        : `Image has no dpi saved, so it is placed at ${DEFAULT_DPI} dpi. Check the size, or set the resolution in Photoshop and re-save.`);
+        : `Image has no dpi saved; placed at ${+dpi.toFixed(2)} dpi as entered.`);
       const swap = img.orientation >= 5;
       const W = ((swap ? img.height : img.width) / dpi) * 72;
       const H = ((swap ? img.width : img.height) / dpi) * 72;

@@ -9,7 +9,7 @@ const { pageStreams } = require('./invariants.js');
 const MM = fx.MM;
 const base = {
   bleedMm: 3, mode: 'mirror', sliverMm: 0.5, marks: true, markOffsetMm: 3, markLenMm: 5,
-  markWeightPt: 0.25,
+  markWeightPt: 0.25, imageDpi: 300,
 };
 const run = (bytes, kind, o = {}) => addBleed(PDFLib, bytes, kind, { ...base, ...o });
 const has = (r, re) => r.warnings.some((w) => re.test(w));

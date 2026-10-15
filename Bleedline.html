@@ -80,6 +80,9 @@
   .item .meta.err { color: var(--err); }
   .item ul.warn { flex-basis: 100%; margin: 2px 0 0; padding-left: 18px; font-size: 12px; color: var(--warn); }
   .item ul.warn:empty { display: none; }
+  .item .ask { flex-basis: 100%; display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 6px;
+    background: var(--drop); color: var(--ink); }
+  .item .ask input { width: 72px; }
   #preview { flex: 1; width: 100%; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
   .hint { color: var(--muted); font-size: 12px; margin: 0; }
   .hint:empty, [hidden] { display: none !important; }
@@ -231,12 +234,12 @@
         sides, that artwork is used as the bleed, cut to the bleed size, instead of mirroring. Nothing is flipped or
         pieced together, so there are no seams. It isn't used when the trim comes from crop marks or <em>Custom</em>.
         If only some sides have enough, the bleed is mirrored and a warning says so.</li>
-    <li>Images are placed at the dpi saved in the file (72 dpi, with a warning, if none is saved), turned to match the
-        camera orientation tag, and keep their embedded colour profile. JPEG data is embedded unchanged; PNGs are
+    <li>Images are placed at the dpi saved in the file. If an image has none, you're asked for one under the file
+        (filled in with the last dpi you entered). Images are turned to match the camera orientation tag, and keep their embedded colour profile. JPEG data is embedded unchanged; PNGs are
         embedded losslessly (greyscale, 16-bit and indexed stay as they are). PNGs with transparency are decoded to
         8-bit RGB with an alpha mask, and you'll get a warning if that changes anything.</li>
   </ul>
-  <p class="hint">Build 92d1b26, 2026-10-15</p>
+  <p class="hint">Build b13bdae-dirty, 2026-10-15</p>
   <p><kbd>F1</kbd> or <kbd>?</kbd> opens this help. <button id="helpClose">Close</button></p>
 </dialog>
 
@@ -315,8 +318,6 @@
     return [-k, o + len + k * len];
   }
 
-  // Images with no resolution saved are placed at 72 dpi, as Photoshop and Acrobat do.
-  const DEFAULT_DPI = 72;
 
   // PDF boxes may list their corners in any order, so normalise to min/max.
   const rect = (r) => ({
@@ -914,6 +915,7 @@
       if (!(num(opts.markOffsetMm) && opts.markOffsetMm >= 0)) bad('Offset from trim must be 0 mm or more.');
     }
     const given = (v) => v !== undefined && v !== null;
+    if (given(opts.imageDpi) && !(num(opts.imageDpi) && opts.imageDpi > 0)) bad('Image dpi must be more than 0.');
     if (given(opts.trimWMm) || given(opts.trimHMm)) {
       if (!(given(opts.trimWMm) && given(opts.trimHMm))) bad('Set both the trim width and height, or neither.');
       if (!(num(opts.trimWMm) && opts.trimWMm > 0 && num(opts.trimHMm) && opts.trimHMm > 0))
@@ -925,7 +927,8 @@
    * opts: { bleedMm, mode: 'mirror'|'stretch', sliverMm, marks, markOffsetMm,
    *         markLenMm, markWeightPt,
    *         keepBleed (true = use the PDF's own bleed when its TrimBox has enough on all sides),
-   *         trimWMm, trimHMm (both > 0 = manual trim size, centred) }
+   *         trimWMm, trimHMm (both > 0 = manual trim size, centred),
+   *         imageDpi (images with no dpi saved only; without it they throw an Error with code 'NEED_DPI') }
    * kind: 'pdf' | 'png' | 'jpg'
    * Returns { bytes, pages: [{wMm, hMm, srcTrim (PDF only: [x0,y0,x1,y1] in source page space)}], warnings: [string] }
    */
@@ -1157,9 +1160,15 @@
       });
     } else {
       const img = kind === 'png' ? await embedPng(srcBytes) : embedJpeg(srcBytes);
-      const dpi = img.dpi || DEFAULT_DPI;
+      // The file's own dpi always wins; imageDpi is only for images that have none saved.
+      if (!img.dpi && !(opts.imageDpi > 0)) {
+        const e = new Error('Image has no dpi saved. Enter the dpi it should be placed at.');
+        e.code = 'NEED_DPI';
+        throw e;
+      }
+      const dpi = img.dpi || opts.imageDpi;
       warn(img.dpi ? `Image placed at its own ${Math.round(dpi)} dpi.`
-        : `Image has no dpi saved, so it is placed at ${DEFAULT_DPI} dpi. Check the size, or set the resolution in Photoshop and re-save.`);
+        : `Image has no dpi saved; placed at ${+dpi.toFixed(2)} dpi as entered.`);
       const swap = img.orientation >= 5;
       const W = ((swap ? img.height : img.width) / dpi) * 72;
       const H = ((swap ? img.width : img.height) / dpi) * 72;
@@ -1354,8 +1363,9 @@
   const $ = (id) => document.getElementById(id);
   const fields = ['bleedMm', 'sliverMm', 'markOffsetMm', 'markLenMm', 'markWeightPt'];
   const KEY = 'bleedline.settings', OLD_KEY = 'addbleed.settings';
+  const DPI_KEY = 'bleedline.dpi'; // last dpi entered for an image with none saved
   // entry.trim = { mode: 'auto' | 'set', w, h } (mm): each file has its own trim setting.
-  const files = []; // { file, kind, trim, url, urlRun, run, opts, pages, error, el }
+  const files = []; // { file, kind, trim, dpi, url, urlRun, run, opts, pages, error, el }
   let selected = null;
 
   // ---- settings ----
@@ -1365,6 +1375,7 @@
     // An empty field reads as NaN so it fails the checks instead of quietly becoming 0.
     for (const f of fields) o[f] = parseFloat($(f).value);
     if (entry && entry.trim.mode === 'set') { o.trimWMm = entry.trim.w; o.trimHMm = entry.trim.h; }
+    if (entry && entry.dpi) o.imageDpi = entry.dpi;
     return o;
   }
   // Mirrors validateOpts() in bleed.js: { fieldId: good? }.
@@ -1439,12 +1450,25 @@
       const entry = { file, kind, trim: { mode: 'auto' }, run: 0, urlRun: 0 };
       entry.el = document.createElement('div');
       entry.el.className = 'item';
-      entry.el.innerHTML = '<span class="name"></span><span class="meta"></span><button class="primary dl" title="Download the PDF with bleed"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg>Download</button><button class="rm" title="Remove">✕</button><ul class="warn"></ul>';
+      entry.el.innerHTML = '<span class="name"></span><span class="meta"></span><button class="primary dl" title="Download the PDF with bleed"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11m-5-5 5 5 5-5M5 20h14"/></svg>Download</button><button class="rm" title="Remove">✕</button><ul class="warn"></ul>' +
+        '<div class="ask" hidden><span>No dpi saved in this image. Place it at</span><input type="number" min="1" step="1" aria-label="dpi"><span>dpi</span><button class="primary">Use</button></div>';
       entry.el.querySelector('.name').textContent = file.name;
       const dl = entry.el.querySelector('button.dl'), rm = entry.el.querySelector('button.rm');
       dl.onclick = (e) => { e.stopPropagation(); download(entry); };
       rm.onclick = (e) => { e.stopPropagation(); remove(entry); };
       entry.el.onclick = () => select(entry);
+      const ask = entry.el.querySelector('.ask'), dpiIn = ask.querySelector('input');
+      const useDpi = () => {
+        const v = parseFloat(dpiIn.value);
+        dpiIn.classList.toggle('bad', !(v > 0));
+        if (!(v > 0)) return;
+        entry.dpi = v;
+        try { localStorage.setItem(DPI_KEY, String(v)); } catch (e) {}
+        ask.hidden = true;
+        process(entry);
+      };
+      ask.querySelector('button').onclick = (e) => { e.stopPropagation(); useDpi(); };
+      dpiIn.onkeydown = (e) => { if (e.key === 'Enter') useDpi(); };
       $('list').appendChild(entry.el);
       files.push(entry);
       document.body.classList.add('has-files');
@@ -1490,12 +1514,22 @@
       dl.disabled = false;
     } catch (err) {
       if (run !== entry.run) return;
-      console.error(err);
       if (entry.url) URL.revokeObjectURL(entry.url);
       entry.url = null; entry.pages = null;
       entry.error = err;
-      meta.textContent = 'Failed: ' + (err.message || err);
-      meta.classList.add('err');
+      if (err.code === 'NEED_DPI') {
+        // Ask for the dpi, starting from the last one entered.
+        const ask = entry.el.querySelector('.ask'), dpiIn = ask.querySelector('input');
+        let last = null; try { last = parseFloat(localStorage.getItem(DPI_KEY)); } catch (e) {}
+        dpiIn.value = last > 0 ? last : 300;
+        ask.hidden = false;
+        meta.textContent = 'Needs a dpi';
+        if (!document.querySelector('.ask:not([hidden]) input:focus')) { dpiIn.focus(); dpiIn.select(); }
+      } else {
+        console.error(err);
+        meta.textContent = 'Failed: ' + (err.message || err);
+        meta.classList.add('err');
+      }
     }
     if (selected === entry) showPreview(entry);
   }
