@@ -1034,8 +1034,9 @@
         // previewSeams hides them for on-screen viewing: the artwork goes down first, then each
         // bleed piece is painted over it as a transparency group (rendered flat, then clipped,
         // with its own edges beyond the clip), reaching SEAM pt over the trim edge.
-        const hide = opts.previewSeams === true;
-        const ov = hide ? SEAM : 0, g = 2 * ov;
+        // previewSeams: true, or the overlap in pt (wider for small on-screen previews).
+        const hide = opts.previewSeams === true || opts.previewSeams > 0;
+        const ov = !hide ? 0 : opts.previewSeams > 0 ? opts.previewSeams : SEAM, g = 2 * ov;
         const pw = W + 2 * margin, ph = H + 2 * margin;
         const span = (side, o, len, ext) => (side < 0 ? [o - b, b + ext] : side > 0 ? [o + len - ext, b + ext] : [o, len]);
         const cells = [[0, 0]];

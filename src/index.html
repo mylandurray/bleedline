@@ -159,7 +159,7 @@
 
   <div class="note">
     <p>PDF viewers, including this preview, can show thin lines where the bleed meets the artwork. They don't print.</p>
-    <label class="check" title="Only changes the preview. The downloaded PDF is never affected."><input type="checkbox" id="previewSeams">Hide lines in the preview</label>
+    <label class="check" title="Only changes the preview panel. The downloaded PDF and the full view are never affected."><input type="checkbox" id="previewSeams">Hide lines in the preview</label>
   </div>
   </div>
 
@@ -181,7 +181,7 @@
             <label><input type="radio" name="spread" value="1"><span>1 page</span></label>
             <label><input type="radio" name="spread" value="2" checked><span>2 pages</span></label>
           </div>
-          <button id="pvOpen" title="Open in the browser's PDF viewer, to zoom or print">Open full view ↗</button>
+          <button id="pvOpen" title="Open the PDF you'll download in the browser's PDF viewer, to zoom or print">Open full view ↗</button>
         </div>
         <div id="pvPages"></div>
         <iframe id="previewFrame" title="Preview" hidden></iframe>
@@ -244,8 +244,9 @@
     <li>PDF page content, fonts and images are copied unchanged (byte-for-byte for single-stream pages; multi-part page
         content is joined and recompressed losslessly), not rasterised. Nothing inside the trim is changed, scaled
         or moved. PDF viewers, including the preview, can show faint lines where the bleed meets the artwork; they
-        don't print. <strong>Hide lines in the preview</strong> (under the settings) paints the bleed 0.26 mm over the
-        trim edge in the preview only, so they disappear on screen; the downloaded PDF is always made without it.
+        don't print. <strong>Hide lines in the preview</strong> (under the settings) paints the bleed 1 mm over the
+        trim edge in the preview panel only, so they disappear on screen. The downloaded PDF, and <em>Open full
+        view</em>, are always the real output without it.
         The preview is a guide: check the downloaded PDF before it goes to print.</li>
     <li>Output intent (PDF/X profile), XMP metadata, document info, transparency settings and layers are carried over.
         The XMP gets a new instance ID and modification date, since the output is a new file.</li>
@@ -297,8 +298,8 @@ const Preview = (() => {
   const WASM = /*PDFJS_WASM*/;
   const SPREAD_KEY = 'bleedline.spread';
   const $ = (id) => document.getElementById(id);
-  let lib = null, failed = false, starting = null;
-  let doc = null, url = null, first = 1, showToken = 0, drawToken = 0;
+  let lib = null, worker = null, failed = false, starting = null;
+  let doc = null, task = null, url = null, first = 1, showToken = 0, drawToken = 0;
   let spread = 2;
   try { if (localStorage.getItem(SPREAD_KEY) === '1') spread = 1; } catch (e) {}
 
@@ -307,8 +308,9 @@ const Preview = (() => {
       try {
         lib = await import(URL.createObjectURL(new Blob([$('pdfjsSrc').textContent], { type: 'text/javascript' })));
         // A data: URL, because pages opened from disk (file://) may not start module workers from blob: URLs.
-        const worker = 'data:text/javascript,' + encodeURIComponent($('pdfjsWorkerSrc').textContent);
-        lib.GlobalWorkerOptions.workerPort = new Worker(worker, { type: 'module' });
+        const src = 'data:text/javascript,' + encodeURIComponent($('pdfjsWorkerSrc').textContent);
+        // One worker for the whole session, passed to every document so destroying a document leaves it running.
+        worker = new lib.PDFWorker({ port: new Worker(src, { type: 'module' }) });
       } catch (e) {
         console.error('PDF.js could not start; using the browser viewer.', e);
         failed = true;
@@ -330,7 +332,7 @@ const Preview = (() => {
   async function show(bytes, u, keep) {
     const t = ++showToken;
     url = u;
-    if (!bytes) { setDoc(null); return; }
+    if (!bytes) { setDoc(null, null); return; }
     await start();
     if (t !== showToken) return;
     if (failed) {
@@ -339,18 +341,18 @@ const Preview = (() => {
       $('previewFrame').src = u + '#view=Fit';
       return;
     }
+    // The loading task owns the document: destroying it frees the document (PDFDocumentProxy has no destroy()).
+    const tk = lib.getDocument({ data: bytes.slice(), worker, BinaryDataFactory: Embedded, useWorkerFetch: false });
     let d = null;
-    try {
-      d = await lib.getDocument({ data: bytes.slice(), BinaryDataFactory: Embedded, useWorkerFetch: false }).promise;
-    } catch (e) { console.error(e); }
-    if (t !== showToken) { if (d) d.destroy(); return; }
+    try { d = await tk.promise; } catch (e) { console.error(e); }
+    if (t !== showToken || !d) { tk.destroy(); if (t === showToken) setDoc(null, null); return; }
     if (!keep) first = 1;
-    setDoc(d);
+    setDoc(d, tk);
   }
-  function setDoc(d) {
-    if (doc && doc !== d) doc.destroy();
-    doc = d;
-    draw();
+  function setDoc(d, tk) {
+    if (task && task !== tk) task.destroy();
+    doc = d; task = tk;
+    draw().catch((e) => console.error(e));
   }
 
   async function draw() {
@@ -367,7 +369,8 @@ const Preview = (() => {
     $('pvOpen').disabled = !url;
     if (!n) { area.replaceChildren(); return; }
     const pages = [];
-    for (let i = first; i <= last; i++) pages.push(await doc.getPage(i));
+    const current = doc;
+    for (let i = first; i <= last; i++) pages.push(await current.getPage(i));
     if (t !== drawToken) return;
     // Fit the spread into the panel.
     const gap = 16, pad = 16;
@@ -388,7 +391,8 @@ const Preview = (() => {
     area.replaceChildren(...canvases);
   }
 
-  const step = (dir) => { if (doc) { first += dir * Math.min(spread, doc.numPages); draw(); } };
+  const redraw = () => draw().catch((e) => console.error(e));
+  const step = (dir) => { if (doc) { first += dir * Math.min(spread, doc.numPages); redraw(); } };
   $('pvPrev').onclick = () => step(-1);
   $('pvNext').onclick = () => step(1);
   document.addEventListener('keydown', (e) => {
@@ -401,12 +405,12 @@ const Preview = (() => {
     r.onchange = () => {
       spread = +r.value;
       try { localStorage.setItem(SPREAD_KEY, String(spread)); } catch (e) {}
-      draw();
+      redraw();
     };
   }
   $('pvOpen').onclick = () => { if (url) window.open(url, '_blank'); };
   let resizeTimer;
-  new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(draw, 120); }).observe($('pvPages'));
+  new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(redraw, 120); }).observe($('pvPages'));
   return { show };
 })();
 </script>
@@ -419,6 +423,8 @@ const Preview = (() => {
   const KEY = 'bleedline.settings', OLD_KEY = 'addbleed.settings';
   const DPI_KEY = 'bleedline.dpi'; // last dpi entered for an image with none saved
   const SEAMS_KEY = 'bleedline.previewSeams';
+  // Overlap for the lines-hidden preview: at least ~1.5 screen pixels at the panel's usual size, or PDF.js still shows lines.
+  const PREVIEW_SEAM_PT = 3;
   // entry.trim = { mode: 'auto' | 'set', w, h } (mm): each file has its own trim setting.
   const files = []; // { file, kind, trim, dpi, url, viewUrl, urlRun, run, opts, pages, error, el }
   let selected = null;
@@ -556,10 +562,10 @@ const Preview = (() => {
       const res = await Bleedline.addBleed(PDFLib, bytes, entry.kind, opts);
       if (run !== entry.run) return;
       // Hiding the lines changes the artwork, so it is made separately and only ever shown, never downloaded.
-      const view = $('previewSeams').checked ? await Bleedline.addBleed(PDFLib, bytes, entry.kind, { ...opts, previewSeams: true }) : null;
+      const view = $('previewSeams').checked ? await Bleedline.addBleed(PDFLib, bytes, entry.kind, { ...opts, previewSeams: PREVIEW_SEAM_PT }) : null;
       if (run !== entry.run) return;
       const blob = (r) => URL.createObjectURL(new Blob([r.bytes], { type: 'application/pdf' }));
-      setUrls(entry, blob(res), view && blob(view));
+      setUrls(entry, blob(res), null);
       entry.viewBytes = (view || res).bytes;
       entry.urlRun = run;
       entry.opts = opts;
@@ -631,7 +637,8 @@ const Preview = (() => {
   let shown = null; // the file the preview is showing, so a re-run keeps its page
   function showPreview(entry) {
     showTrim(entry);
-    const u = entry && (entry.viewUrl || entry.url);
+    // The panel shows the lines-hidden copy when that's on; full view always opens the real output.
+    const u = entry && entry.url;
     Preview.show(u ? entry.viewBytes : null, u, entry === shown);
     shown = entry;
   }
