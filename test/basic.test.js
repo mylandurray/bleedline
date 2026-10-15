@@ -158,6 +158,13 @@ test('centre clip is the TrimBox and no transparency group', async () => {
   assert.equal(await hasTransparencyGroup(r.bytes), false);
 });
 
+test('previewSeams (preview only) adds transparency groups; without it there are none', async () => {
+  const trim = fx.mmRect(10, 10, 90, 60);
+  const src = await fx.page({ media: [120 * MM, 90 * MM], trim, content: fx.fill(trim, [1, 0, 0, 0]) });
+  assert.equal(await hasTransparencyGroup((await run(src, 'pdf', { marks: false, previewSeams: true })).bytes), true);
+  assert.equal(await hasTransparencyGroup((await run(src, 'pdf', { marks: false })).bytes), false);
+});
+
 // ---------- page content copied once (phase 4a) ----------
 
 test('single content stream: raw bytes and /Filter reused as is', async () => {

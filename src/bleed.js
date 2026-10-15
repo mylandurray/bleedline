@@ -50,11 +50,16 @@
 
   // One axis of a cell transform: returns [scale, offset] mapping visual u -> output.
   // side -1 = before the trim, 0 = inside, +1 = after.
-  function axis(side, o, len, k) {
+  // `off` shifts the bleed copy towards the trim so its own artwork edge sits
+  // beyond the piece's clip (preview seam hiding only, see addBleed).
+  function axis(side, o, len, k, off = 0) {
     if (side === 0) return [1, o];
-    if (side < 0) return [-k, o];
-    return [-k, o + len + k * len];
+    if (side < 0) return [-k, o + off];
+    return [-k, o + len - off + k * len];
   }
+
+  // Overlap (pt, ~0.26 mm) that hides on-screen anti-aliasing seams in the preview.
+  const SEAM = 0.75;
 
 
   // PDF boxes may list their corners in any order, so normalise to min/max.
@@ -664,6 +669,8 @@
   /**
    * opts: { bleedMm, mode: 'mirror'|'stretch', sliverMm, marks, markOffsetMm,
    *         markLenMm, markWeightPt,
+   *         previewSeams (PREVIEW ONLY: paints the bleed 0.26 mm over the trim edge to hide on-screen
+   *           hairlines; this changes the artwork, so output made with it must never be downloaded),
    *         keepBleed (true = use the PDF's own bleed when its TrimBox has enough on all sides),
    *         trimWMm, trimHMm (both > 0 = manual trim size, centred),
    *         imageDpi (images with no dpi saved only; without it they throw an Error with code 'NEED_DPI') }
@@ -1023,21 +1030,38 @@
         const k = opts.mode === 'stretch' ? b / sliver : 1;
 
         // Each piece is clipped exactly to its own cell, so the trim area is the original artwork.
-        // (Viewers may show faint hairlines where pieces meet; they don't print.)
-        const span = (side, o, len) => (side < 0 ? [o - b, b] : side > 0 ? [o + len, b] : [o, len]);
+        // Viewers show faint hairlines where pieces meet (they don't print).
+        // previewSeams hides them for on-screen viewing: the artwork goes down first, then each
+        // bleed piece is painted over it as a transparency group (rendered flat, then clipped,
+        // with its own edges beyond the clip), reaching SEAM pt over the trim edge.
+        const hide = opts.previewSeams === true;
+        const ov = hide ? SEAM : 0, g = 2 * ov;
+        const pw = W + 2 * margin, ph = H + 2 * margin;
+        const span = (side, o, len, ext) => (side < 0 ? [o - b, b + ext] : side > 0 ? [o + len - ext, b + ext] : [o, len]);
         const cells = [[0, 0]];
-        for (const j of [-1, 0, 1]) for (const i of [-1, 0, 1]) if (i || j) cells.push([i, j]);
+        for (const j of [-1, 0, 1]) for (const i of [-1, 0, 1]) if (!i !== !j) cells.push([i, j]);
+        for (const j of [-1, 1]) for (const i of [-1, 1]) cells.push([i, j]);
         for (const [i, j] of cells) {
           if (b <= 0 && (i || j)) continue;
-          const [sx, ex] = axis(i, ox, W, k);
-          const [sy, ey] = axis(j, oy, H, k);
-          const [cx, cw] = span(i, ox, W);
-          const [cy, ch] = span(j, oy, H);
+          const [sx, ex] = axis(i, ox, W, k, i ? g : 0);
+          const [sy, ey] = axis(j, oy, H, k, j ? g : 0);
+          const m = mul(s.base, [sx, 0, 0, sy, ex, ey]);
+          const [cx, cw] = span(i, ox, W, i ? ov : 0);
+          const [cy, ch] = span(j, oy, H, j ? ov : 0);
+          let xo = name, pre = [concatTransformationMatrix(...m)];
+          if (hide && (i || j)) {
+            const grp = ctx.register(ctx.flateStream(`${m.map((v) => +v.toFixed(6)).join(' ')} cm /Art Do`, {
+              Type: 'XObject', Subtype: 'Form', BBox: [0, 0, pw, ph],
+              Group: { S: 'Transparency' }, Resources: { XObject: { Art: s.ref } },
+            }));
+            xo = page.node.newXObject('Bleed', grp);
+            pre = [];
+          }
           page.pushOperators(
             pushGraphicsState(),
             rectangle(cx, cy, cw, ch), clip(), endPath(),
-            concatTransformationMatrix(...mul(s.base, [sx, 0, 0, sy, ex, ey])),
-            drawObject(name),
+            ...pre,
+            drawObject(xo),
             popGraphicsState(),
           );
         }

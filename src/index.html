@@ -14,7 +14,10 @@
       --accent: #4c94f0; --drop: #1d2a3d; --warn: #f0b350; }
   }
   * { box-sizing: border-box; }
-  body { margin: 0; font: 14px/1.4 system-ui, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink); }
+  body { margin: 0; font: 14px/1.4 system-ui, "Segoe UI", sans-serif; background: var(--bg); color: var(--ink);
+    display: flex; flex-direction: column; height: 100vh; }
+  #notice { padding: 6px 20px; font-size: 13px; text-align: center; color: var(--warn);
+    background: color-mix(in srgb, var(--warn) 10%, var(--panel)); border-bottom: 1px solid var(--line); }
   header { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 12px; padding: 8px 20px;
     border-bottom: 1px solid var(--line); background: var(--panel); min-height: 51px; }
   header h1 { font-size: 17px; margin: 0; white-space: nowrap; }
@@ -26,10 +29,14 @@
   #trimInfo .arrow { color: var(--muted); }
   #trimInfo .pages { font-size: 12px; }
   @media (max-width: 800px) { header { grid-template-columns: 1fr auto; } #trimInfo { grid-row: 2; grid-column: 1 / -1; flex-wrap: wrap; } }
-  main { display: grid; grid-template-columns: 260px 1fr; gap: 16px; padding: 16px 20px; height: calc(100vh - 51px); }
-  @media (max-width: 800px) { main { grid-template-columns: 1fr; height: auto; } }
-  .side { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 2px 14px; overflow: auto;
-    align-self: start; max-height: 100%; }
+  main { display: grid; grid-template-columns: 260px 1fr; gap: 16px; padding: 16px 20px; flex: 1; min-height: 0; }
+  @media (max-width: 800px) { body { height: auto; } main { grid-template-columns: 1fr; } }
+  .sidecol { display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow: auto; }
+  .side { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 2px 14px; }
+  .note { border: 1px solid var(--line); border-radius: 8px; padding: 10px 14px; font-size: 12px; color: var(--muted);
+    display: grid; gap: 8px; }
+  .note p { margin: 0; }
+  .note label.check { color: var(--ink); font-size: 13px; }
   fieldset { border: 0; margin: 0; padding: 10px 0 12px; display: grid; gap: 8px; min-width: 0; }
   fieldset + fieldset { border-top: 1px solid var(--line); }
   legend { float: left; width: 100%; padding: 0; font-size: 11px; font-weight: 700; letter-spacing: .06em;
@@ -104,7 +111,9 @@
     <button id="helpBtn" title="Help (F1)" aria-label="Help">?</button>
   </div>
 </header>
+<div id="notice">The preview is a guide only. Always check the downloaded PDF before it goes to print.</div>
 <main>
+  <div class="sidecol">
   <div class="side">
     <fieldset>
       <legend>Bleed</legend>
@@ -135,6 +144,12 @@
         <label>Weight pt<input type="number" id="markWeightPt" min="0.1" step="0.05" value="0.25"></label>
       </div>
     </fieldset>
+  </div>
+
+  <div class="note">
+    <p>PDF viewers, including this preview, can show thin lines where the bleed meets the artwork. They don't print.</p>
+    <label class="check" title="Only changes the preview. The downloaded PDF is never affected."><input type="checkbox" id="previewSeams">Hide lines in the preview</label>
+  </div>
   </div>
 
   <div class="work">
@@ -201,7 +216,10 @@
         software and preflight pick up the trim correctly.</li>
     <li>PDF page content, fonts and images are copied unchanged (byte-for-byte for single-stream pages; multi-part page
         content is joined and recompressed losslessly), not rasterised. Nothing inside the trim is changed, scaled
-        or moved. Some PDF viewers show faint hairlines where the bleed meets the artwork; they don't print.</li>
+        or moved. PDF viewers, including the preview, can show faint lines where the bleed meets the artwork; they
+        don't print. <strong>Hide lines in the preview</strong> (under the settings) paints the bleed 0.26 mm over the
+        trim edge in the preview only, so they disappear on screen; the downloaded PDF is always made without it.
+        The preview is a guide: check the downloaded PDF before it goes to print.</li>
     <li>Output intent (PDF/X profile), XMP metadata, document info, transparency settings and layers are carried over.
         The XMP gets a new instance ID and modification date, since the output is a new file.</li>
     <li>PDF/X and PDF/A files keep their claim: the output keeps the source's PDF version, and for PDF/X-1a, PDF/X-3
@@ -251,8 +269,9 @@
   const fields = ['bleedMm', 'sliverMm', 'markOffsetMm', 'markLenMm', 'markWeightPt'];
   const KEY = 'bleedline.settings', OLD_KEY = 'addbleed.settings';
   const DPI_KEY = 'bleedline.dpi'; // last dpi entered for an image with none saved
+  const SEAMS_KEY = 'bleedline.previewSeams';
   // entry.trim = { mode: 'auto' | 'set', w, h } (mm): each file has its own trim setting.
-  const files = []; // { file, kind, trim, dpi, url, urlRun, run, opts, pages, error, el }
+  const files = []; // { file, kind, trim, dpi, url, viewUrl, urlRun, run, opts, pages, error, el }
   let selected = null;
 
   // ---- settings ----
@@ -375,8 +394,7 @@
     const opts = readOpts(entry);
     const rules = rulesFor(opts);
     if (!Object.values(rules).every(Boolean)) {
-      if (entry.url) URL.revokeObjectURL(entry.url);
-      entry.url = null; entry.pages = null;
+      setUrls(entry, null, null); entry.pages = null;
       const own = Object.entries(rules).every(([id, good]) => good || id === 'trimW' || id === 'trimH');
       meta.textContent = own ? "Fix this file's trim size" : 'Fix the highlighted setting'; meta.classList.add('err');
       if (selected === entry) showPreview(entry);
@@ -388,8 +406,11 @@
       if (run !== entry.run) return;
       const res = await Bleedline.addBleed(PDFLib, bytes, entry.kind, opts);
       if (run !== entry.run) return;
-      if (entry.url) URL.revokeObjectURL(entry.url);
-      entry.url = URL.createObjectURL(new Blob([res.bytes], { type: 'application/pdf' }));
+      // Hiding the lines changes the artwork, so it is made separately and only ever shown, never downloaded.
+      const view = $('previewSeams').checked ? await Bleedline.addBleed(PDFLib, bytes, entry.kind, { ...opts, previewSeams: true }) : null;
+      if (run !== entry.run) return;
+      const blob = (r) => URL.createObjectURL(new Blob([r.bytes], { type: 'application/pdf' }));
+      setUrls(entry, blob(res), view && blob(view));
       entry.urlRun = run;
       entry.opts = opts;
       const p = res.pages[0];
@@ -401,8 +422,7 @@
       dl.disabled = false;
     } catch (err) {
       if (run !== entry.run) return;
-      if (entry.url) URL.revokeObjectURL(entry.url);
-      entry.url = null; entry.pages = null;
+      setUrls(entry, null, null); entry.pages = null;
       entry.error = err;
       if (err.code === 'NEED_DPI') {
         // Ask for the dpi, starting from the last one entered.
@@ -452,9 +472,15 @@
     if (entry.pages.length > 1) add('pages', mixed ? `page 1 of ${entry.pages.length}, sizes vary` : `${entry.pages.length} pages`);
   }
 
+  // url = the PDF to download; viewUrl = the preview with lines hidden (null when that's off).
+  function setUrls(entry, url, viewUrl) {
+    for (const u of [entry.url, entry.viewUrl]) if (u) URL.revokeObjectURL(u);
+    entry.url = url; entry.viewUrl = viewUrl;
+  }
   function showPreview(entry) {
     showTrim(entry);
-    $('preview').src = entry && entry.url ? entry.url + '#view=Fit' : 'about:blank';
+    const u = entry && (entry.viewUrl || entry.url);
+    $('preview').src = u ? u + '#view=Fit' : 'about:blank';
   }
   function download(entry) {
     if (!entry.url || entry.run !== entry.urlRun) return; // never save output from older settings
@@ -465,7 +491,7 @@
   function remove(entry) {
     files.splice(files.indexOf(entry), 1);
     entry.el.remove();
-    if (entry.url) URL.revokeObjectURL(entry.url);
+    setUrls(entry, null, null);
     document.body.classList.toggle('has-files', files.length > 0);
     if (selected === entry) select(files[0] || null);
   }
@@ -485,6 +511,11 @@
   const drop = $('drop');
   drop.onclick = () => $('file').click();
   $('addBtn').onclick = () => $('file').click();
+  try { $('previewSeams').checked = localStorage.getItem(SEAMS_KEY) === '1'; } catch (e) {}
+  $('previewSeams').onchange = () => {
+    try { localStorage.setItem(SEAMS_KEY, $('previewSeams').checked ? '1' : '0'); } catch (e) {}
+    schedule(files);
+  };
   $('file').onchange = (e) => { addFiles(e.target.files); e.target.value = ''; };
   ['dragenter', 'dragover'].forEach((t) => document.addEventListener(t, (e) => { e.preventDefault(); drop.classList.add('over'); }));
   ['dragleave', 'drop'].forEach((t) => document.addEventListener(t, (e) => { e.preventDefault(); if (t === 'drop' || !e.relatedTarget) drop.classList.remove('over'); }));
