@@ -40,4 +40,4 @@ npm run build
 
 `npm test` runs the unit tests. `npm run check-samples` renders the PDFs in `test/samples/` (not in git) before and after with Ghostscript and reports any pixel differences inside the trim; it prints install instructions if Ghostscript is missing.
 
-`index.html` just redirects GitHub Pages to `Bleedline.html`. `build.mjs` inlines `pdf-lib` and `src/bleed.js` into `src/index.html` to produce the one-file `Bleedline.html`.
+`index.html` and `AddBleed.html` (the old name, for existing links) just redirect to `Bleedline.html`. `build.mjs` inlines `pdf-lib` and `src/bleed.js` into `src/index.html` to produce the one-file `Bleedline.html`.
