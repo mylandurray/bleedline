@@ -18,7 +18,7 @@ refer to that audit. The checklist at the end of this doc replaces the audit's c
 | 6 | Optional: keep existing bleed, per-file Set size | New behaviour, not a fix | branch `bleed-options` |
 | 7 | Build stamp, rebuild, real-file run, close out | Rollout | `main` |
 
-Every phase ends with `npm test` passing, `npm run build`, and a commit, so `AddBleed.html` is never stale
+Every phase ends with `npm test` passing, `npm run build`, and a commit, so `Bleedline.html` is never stale
 against `src/`. Each phase updates the README and in-app help for whatever it changes.
 
 ---
@@ -295,7 +295,7 @@ Merge to `main` once both work.
    rotated pages; PDF/X-1a and X-4; spot colours with overprint; layers (some hidden); Word/Excel exports with
    tables; JPG (CMYK Adobe, EXIF-rotated) and PNG (alpha, 16-bit, indexed).
 4. `npm test`, `npm run check-samples`, then spot-check three outputs in Acrobat Output Preview and Preflight.
-5. Rebuild, commit, and replace every distributed `AddBleed.html` (shared drive, Pages). Check the build stamp on
+5. Rebuild, commit, and replace every distributed `Bleedline.html` (shared drive, Pages). Check the build stamp on
    the coworkers' copy.
 6. Set this doc and the audit to `status: done`, or delete them.
 

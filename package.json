@@ -1,5 +1,5 @@
 {
-  "name": "add-bleed",
+  "name": "bleedline",
   "version": "1.0.0",
   "description": "Add mirrored/stretched bleed and trim marks to artwork",
   "scripts": {

@@ -595,7 +595,7 @@
     const bad = (m) => { throw new Error(m); };
     const num = (v) => typeof v === 'number' && Number.isFinite(v);
     if (!num(opts.bleedMm) || opts.bleedMm < 0 || opts.bleedMm > 50) bad('Bleed must be a number from 0 to 50 mm.');
-    if (opts.mode === 'stretch' && !(num(opts.sliverMm) && opts.sliverMm > 0)) bad('Edge sliver must be more than 0 mm.');
+    if (opts.mode === 'stretch' && !(num(opts.sliverMm) && opts.sliverMm > 0)) bad('Sliver must be more than 0 mm.');
     if (opts.marks) {
       if (!(num(opts.markLenMm) && opts.markLenMm > 0)) bad('Mark length must be more than 0 mm.');
       if (!(num(opts.markWeightPt) && opts.markWeightPt > 0)) bad('Line weight must be more than 0 pt.');
@@ -781,7 +781,7 @@
             ambiguous: `${noTrim}, and found more than one possible set of crop marks (set the trim size by hand)`,
           }[diag.reason] || (rawTrim ? `${noTrim}, and there are no crop marks` : 'no TrimBox or crop marks');
           warn(`${pn}${why}, so the page size (${mm(tw)} × ${mm(th)} mm) is used as the trim.` +
-            (guess ? ` It looks like ${guess} already, so check it and set` : ' If that\'s wrong, set') + ' it under Trim size > Set size.');
+            (guess ? ` It looks like ${guess} already, so check it and set` : ' If that\'s wrong, set') + ' it under Trim size > Custom.');
         } else {
           const extra = Math.min(box.x0 - media.x0, box.y0 - media.y0, media.x1 - box.x1, media.y1 - box.y1);
           // The file's own bleed: the BleedBox (else CropBox, else MediaBox), within the page.
@@ -1056,5 +1056,5 @@
 
   const api = { addBleed, validateOpts, MM, parseJpeg, parsePng, findCropMarks };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
-  else root.AddBleed = api;
+  else root.Bleedline = api;
 })(typeof self !== 'undefined' ? self : this);

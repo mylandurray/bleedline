@@ -4,7 +4,7 @@ status: active
 
 Goal: be certain the app changes nothing in customer artwork except adding bleed and trim marks.
 Audit date: 2026-10-09. I read all of `src/bleed.js` and `src/index.html` and tested the risky paths in Node.
-The committed `AddBleed.html` matched a fresh build of `src/`.
+The committed `Bleedline.html` matched a fresh build of `src/`.
 
 ## 1. Auto trim can crop the artwork to a table cell (critical)
 
@@ -133,7 +133,7 @@ Confirmed in Node unless noted.
   them pixel by pixel (seam-hiding off). This replaces the manual Acrobat comparison in the checklist and stays
   usable as a regression test.
 - **Build stamp.** Show the build date and commit in the help dialog, so it's possible to tell whether a
-  coworker's copy of `AddBleed.html` on the shared drive is current. After the fixes, replace every distributed copy.
+  coworker's copy of `Bleedline.html` on the shared drive is current. After the fixes, replace every distributed copy.
 
 ## Verified OK (no change needed)
 

@@ -104,7 +104,7 @@ async function main() {
   const { addBleed } = require('../src/bleed.js');
   const opts = { bleedMm: 3, mode: 'mirror', sliverMm: 0.5, marks: true, markOffsetMm: 3, markLenMm: 5,
     markWeightPt: 0.25, imageDpi: 300, useFileDpi: true, hideSeams: false, keepBleed: false };
-  const tmp = mkdtempSync(join(tmpdir(), 'addbleed-'));
+  const tmp = mkdtempSync(join(tmpdir(), 'bleedline-'));
   const rows = [];
   try {
     for (const f of files) {
