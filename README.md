@@ -37,7 +37,8 @@ Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
 
 Open the link above, or copy `Bleedline.html` to a PC or shared drive and double-click it (Chrome or Edge) to use it offline.
 Either way, files are processed in the browser and never uploaded.
-Full instructions are in the page: click **?** (or press F1).
+Full instructions are in the page: click **?** (or press F1). After an update, a *What's new* box shows the changes
+once; it can be opened again from the help.
 
 ## Build
 

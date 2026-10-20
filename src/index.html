@@ -111,6 +111,10 @@
   dialog h3 { margin-bottom: 4px; }
   dialog p, dialog li { color: var(--ink); }
   kbd { border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; font-size: 12px; }
+  #news { width: 520px; }
+  #newsList { max-height: 60vh; overflow: auto; }
+  #newsList h3 { font-size: 14px; color: var(--muted); margin-top: 12px; }
+  #newsList ul { margin: 0; padding-left: 20px; }
 </style>
 </head>
 <body>
@@ -291,7 +295,14 @@
         8-bit RGB with an alpha mask, and you'll get a warning if that changes anything.</li>
   </ul>
   <p class="hint">Build /*BUILD*/</p>
-  <p><kbd>F1</kbd> or <kbd>?</kbd> opens this help. <button id="helpClose">Close</button></p>
+  <p><kbd>F1</kbd> or <kbd>?</kbd> opens this help. <button id="newsAll">What's new</button> <button id="helpClose">Close</button></p>
+</dialog>
+
+<!-- What's new: shown once per browser when there are notes it hasn't seen. Entries are in the script below. -->
+<dialog id="news">
+  <h2>What's new in Bleedline</h2>
+  <div id="newsList"></div>
+  <p><button id="newsClose" class="primary">Got it</button></p>
 </dialog>
 
 <script type="text/plain" id="pdfjsSrc">/*PDFJS*/</script>
@@ -843,6 +854,46 @@ const Preview = (() => {
   const help = $('help');
   $('helpBtn').onclick = () => help.showModal();
   $('helpClose').onclick = () => help.close();
+
+  // ---- What's new ----
+  // Newest first. Add an entry for every change people will notice (see CLAUDE.md); `id` must be unique and new
+  // entries go at the top. Each browser sees the entries it hasn't seen once, on opening the page; a browser that
+  // has never seen any gets the newest only.
+  const NOTES = [
+    { id: '2026-10-20', date: '20 Oct 2026', items: [
+      'This "What\'s new" box: it shows once after each update. Open it again any time from Help.',
+      'New warning when the artwork stops just short of the trim (a hairline white gap along an edge). Mirrored bleed doubles a gap like that, so it can show as a white line after cutting. The file isn\'t changed; check the original artwork.',
+      'A warning that applies to many pages is listed once, with the page numbers, instead of once per page.',
+    ] },
+    { id: '2026-10-15', date: '15 Oct 2026', items: [
+      'New name: Bleedline (old AddBleed links still work).',
+      'Sharper preview showing two pages side by side; switch to one page above the preview.',
+      'Images with no dpi saved now ask for one, remembering the last dpi you entered.',
+      'Size check: pages supplied at the same size must all get the same trim.',
+    ] },
+  ];
+  const NEWS_KEY = 'bleedline.newsSeen';
+  const news = $('news');
+  function showNews(list) {
+    $('newsList').replaceChildren(...list.flatMap((n) => {
+      const h = document.createElement('h3'); h.textContent = n.date;
+      const ul = document.createElement('ul');
+      for (const t of n.items) { const li = document.createElement('li'); li.textContent = t; ul.appendChild(li); }
+      return [h, ul];
+    }));
+    if (help.open) help.close();
+    news.showModal();
+  }
+  $('newsClose').onclick = () => news.close();
+  $('newsAll').onclick = () => showNews(NOTES);
+  {
+    let seen = null; try { seen = localStorage.getItem(NEWS_KEY); } catch (e) {}
+    const i = NOTES.findIndex((n) => n.id === seen);
+    const unseen = i < 0 ? NOTES.slice(0, 1) : NOTES.slice(0, i);
+    if (unseen.length) showNews(unseen);
+    // Seen once it has been shown, whether or not it's closed with the button.
+    try { localStorage.setItem(NEWS_KEY, NOTES[0].id); } catch (e) {}
+  }
   document.addEventListener('keydown', (e) => {
     if (e.key === 'F1' || (e.key === '?' && !/INPUT/.test(e.target.tagName))) { e.preventDefault(); help.showModal(); }
   });
