@@ -290,7 +290,7 @@
         embedded losslessly (greyscale, 16-bit and indexed stay as they are). PNGs with transparency are decoded to
         8-bit RGB with an alpha mask, and you'll get a warning if that changes anything.</li>
   </ul>
-  <p class="hint">Build 6aa170a, 2026-10-20</p>
+  <p class="hint">Build b5b7463, 2026-10-20</p>
   <p><kbd>F1</kbd> or <kbd>?</kbd> opens this help. <button id="helpClose">Close</button></p>
 </dialog>
 
@@ -1707,7 +1707,38 @@ const Preview = (() => {
       bytes[7] = version.charCodeAt(2);
     }
     await checkOutput(PDFLib, bytes, sources, b);
-    return { bytes, pages: info, warnings };
+    return { bytes, pages: info, warnings: groupPages(warnings, info.length) };
+  }
+
+  // "Page 1: x", "Page 2: x", ... -> one "Pages 1–2: x" (or "All pages: x"), kept where the first one was,
+  // so a many-page job doesn't list the same warning once per page.
+  function groupPages(warnings, total) {
+    const out = [], byText = new Map();
+    for (const w of warnings) {
+      const m = /^Page (\d+): ([\s\S]*)$/.exec(w);
+      if (!m) { out.push(w); continue; }
+      let g = byText.get(m[2]);
+      if (!g) { g = { pages: [], text: m[2] }; byText.set(m[2], g); out.push(g); }
+      g.pages.push(+m[1]);
+    }
+    return out.map((g) => {
+      if (typeof g === 'string') return g;
+      if (g.pages.length === 1) return `Page ${g.pages[0]}: ${g.text}`;
+      const which = g.pages.length === total ? 'All pages' : `Pages ${pageRanges(g.pages)}`;
+      return `${which}: ${g.text}`;
+    });
+  }
+  // [1,2,3,5] -> "1–3, 5"
+  function pageRanges(a) {
+    a = [...a].sort((x, y) => x - y);
+    const out = [];
+    for (let i = 0; i < a.length; i++) {
+      let j = i;
+      while (j + 1 < a.length && a[j + 1] === a[j] + 1) j++;
+      out.push(j > i ? `${a[i]}–${a[j]}` : `${a[i]}`);
+      i = j;
+    }
+    return out.join(', ');
   }
 
   const api = { addBleed, validateOpts, MM, parseJpeg, parsePng, findCropMarks, edgeLine };
