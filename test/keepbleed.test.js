@@ -136,3 +136,17 @@ test('PDF/X-1a source with kept bleed stays at its version', async () => {
   assert.equal(Buffer.from(r.bytes.subarray(0, 8)).toString('latin1'), '%PDF-1.3');
   assert.ok(!/\/S\s*\/Transparency/.test(Buffer.from(r.bytes).toString('latin1')));
 });
+
+test('the same warning on several pages is listed once, with its pages', async () => {
+  const spec = (l) => {
+    const trim = fx.mmRect(l, l, 90, 60);
+    return { media: [(90 + 2 * l) * MM, (60 + 2 * l) * MM], trim,
+      content: fx.fill(fx.mmRect(0, 0, 90 + 2 * l, 60 + 2 * l), [0, 1, 0, 0]) };
+  };
+  const all = await run(await fx.pdf([spec(2), spec(2), spec(2)]), { marks: false });
+  assert.ok(has(all, /^All pages: already has 2\.0 mm or more beyond the trim/), dump(all));
+  assert.ok(!has(all, /^Page \d/), dump(all));
+  const some = await run(await fx.pdf([spec(2), spec(2), spec(5), spec(2)]), { marks: false });
+  assert.ok(has(some, /^Pages 1–2, 4: already has 2\.0 mm/), dump(some));
+  assert.ok(has(some, /^Page 3: kept the file's own/), dump(some));
+});
