@@ -26,7 +26,9 @@ Drop in a PDF, JPG or PNG and download `name_bleed.pdf`.
 - Size check: pages the same size as supplied must all get the same trim, or the file is refused, so one stray page
   can't be cut to a different size. The finished PDF is read back to confirm every page's trim and bleed.
 - Warns about anything that needs a check (no TrimBox, existing bleed, printable annotations, layers, image dpi/profile)
-  and refuses password-protected or damaged PDFs.
+  and refuses password-protected or damaged PDFs. After the PDF is made, the edges just inside the trim are rendered at
+  high resolution and checked for a thin line or white gap (artwork stopping short of the trim), which the mirrored
+  or stretched bleed would double; it warns only, nothing is changed.
 - Preview shows two pages side by side (or one), fitted to the window, drawn with PDF.js; *Open full view* opens the
   browser's own PDF viewer for zoom and print.
 - Runs entirely in the browser, files never leave the PC. No install, no internet needed.

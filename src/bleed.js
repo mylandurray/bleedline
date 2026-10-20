@@ -642,6 +642,38 @@
 
   // Plain-English checks on the numbers, so a bad value fails loudly instead of
   // silently cutting the artwork or producing a broken page.
+  /**
+   * Edge check, run on a render of the finished page: does the artwork have a thin line along a trim edge
+   * (usually a white gap where a background stops just short of the trim)? Mirrored or stretched bleed doubles
+   * or widens it, so it can show as a white line at the cut. Read-only; nothing is changed.
+   * rows: RGBA pixel rows (Uint8ClampedArray, all the same length) running parallel to the edge, rows[0] touching
+   * the trim and later rows further inside it; pxPerPt: render resolution.
+   * Returns null if there's no line, else { widthPt, lighter, share }.
+   */
+  function edgeLine(rows, pxPerPt) {
+    const n = rows.length ? rows[0].length / 4 : 0;
+    const refA = Math.round(1.2 * pxPerPt), refB = Math.round(1.8 * pxPerPt), maxR = Math.round(1 * pxPerPt);
+    if (refB >= rows.length || n < 20) return null;
+    const dist = (p, i, q, j) => Math.max(Math.abs(p[i] - q[j]), Math.abs(p[i + 1] - q[j + 1]), Math.abs(p[i + 2] - q[j + 2]));
+    const lum = (p, i) => p[i] + p[i + 1] + p[i + 2];
+    let plain = 0, lighter = 0;
+    const widths = [];
+    for (let c = 0; c < n; c++) {
+      const i = c * 4;
+      // Only where the artwork is plain just inside the edge, so busy artwork (photos, text) can't trigger it.
+      if (dist(rows[refA], i, rows[refB], i) > 24) continue;
+      plain++;
+      let k = 0;
+      while (k <= maxR && dist(rows[k], i, rows[refA], i) > 48) k++;
+      if (!k || k > maxR) continue;
+      widths.push(k);
+      if (lum(rows[0], i) > lum(rows[refA], i)) lighter++;
+    }
+    if (plain < 20 || widths.length < 0.6 * plain) return null;
+    widths.sort((a, b) => a - b);
+    return { widthPt: widths[widths.length >> 1] / pxPerPt, lighter: lighter > widths.length / 2, share: widths.length / plain };
+  }
+
   function validateOpts(opts, kind) {
     const bad = (m) => { throw new Error(m); };
     const num = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -666,7 +698,8 @@
    *         markLenMm, markWeightPt,
    *         keepBleed (true = use the PDF's own bleed when its TrimBox has enough on all sides),
    *         trimWMm, trimHMm (both > 0 = manual trim size, centred),
-   *         imageDpi (images with no dpi saved only; without it they throw an Error with code 'NEED_DPI') }
+   *         imageDpi (images with no dpi saved only; without it they throw an Error with code 'NEED_DPI'),
+   *         centreOnly (draw only the trim area, no bleed pieces: a quick-to-render copy for the edge check) }
    * kind: 'pdf' | 'png' | 'jpg'
    * Returns { bytes, pages: [{wMm, hMm, artWMm, artHMm, from, srcTrim (PDF only: [x0,y0,x1,y1] in source page space),
    *   geo: output page geometry in pt { pw, ph, x, y, w, h (trim), b (bleed), pieces (bleed made of pieces, so
@@ -1031,7 +1064,7 @@
         const cells = [[0, 0]];
         for (const j of [-1, 0, 1]) for (const i of [-1, 0, 1]) if (i || j) cells.push([i, j]);
         for (const [i, j] of cells) {
-          if (b <= 0 && (i || j)) continue;
+          if ((b <= 0 || opts.centreOnly) && (i || j)) continue; // centreOnly: the trim area alone, for the edge check
           const [sx, ex] = axis(i, ox, W, k);
           const [sy, ey] = axis(j, oy, H, k);
           const [cx, cw] = span(i, ox, W);
@@ -1096,7 +1129,7 @@
     return { bytes, pages: info, warnings };
   }
 
-  const api = { addBleed, validateOpts, MM, parseJpeg, parsePng, findCropMarks };
+  const api = { addBleed, validateOpts, MM, parseJpeg, parsePng, findCropMarks, edgeLine };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.Bleedline = api;
 })(typeof self !== 'undefined' ? self : this);

@@ -227,6 +227,11 @@
     <li><strong>Printable annotations not included</strong>: stamps, comments or filled-in form fields set to print are
         left out. Flatten them in Acrobat first if they should print.</li>
     <li><strong>Layers</strong>: layers are kept with the same on/off settings as the original.</li>
+    <li><strong>Artwork stops short of the trim</strong> (or has a thin line along it): after the PDF is made, a strip
+        just inside each trim edge is checked at high resolution. A background that ends a hair before the trim leaves a
+        white gap the original hides, but mirroring doubles it (stretching widens it), so it can show as a white
+        line at the cut. The file isn't changed; fix the original artwork, or check the proof closely. The check
+        takes a moment, so this warning can appear a little after the file is ready.</li>
   </ul>
   <h3>Size check</h3>
   <p>Before anything is made, pages that are the same size in the file must all get the same trim. If one page
@@ -447,7 +452,58 @@ const Preview = (() => {
   new ResizeObserver(() => { clearTimeout(resizeTimer); resizeTimer = setTimeout(redraw, 120); }).observe($('pvPages'));
   // Hide the seam lines in the preview (on-screen only).
   function setHide(on) { hide = !!on; redraw(); }
-  return { show, setHide };
+
+  // Edge check (read-only): renders a 2 pt strip just inside each trim edge of the finished PDF at up to
+  // 2400 dpi and asks Bleedline.edgeLine whether the artwork has a thin line (a white gap) along it.
+  // Only pages with mirrored/stretched bleed (geo.pieces). Returns [{ page, side, widthPt, lighter }], or
+  // null if PDF.js isn't available. stale() is polled between renders to give up early.
+  async function checkEdges(bytes, g, stale) {
+    await start();
+    if (failed) return null;
+    const tk = lib.getDocument({ data: bytes.slice(), worker, BinaryDataFactory: Embedded, useWorkerFetch: false });
+    const found = [];
+    try {
+      const d = await tk.promise;
+      for (let n = 1; n <= d.numPages; n++) {
+        const geo = g[n - 1];
+        if (!geo || !geo.pieces || stale()) continue;
+        const page = await d.getPage(n);
+        const S = Math.min(2400 / 72, 16000 / Math.max(geo.w, geo.h)); // px per pt; keeps canvases under 16000 px
+        const vp = page.getViewport({ scale: S });
+        const [l, t] = vp.convertToViewportPoint(geo.x, geo.y + geo.h);
+        const [r, b] = vp.convertToViewportPoint(geo.x + geo.w, geo.y);
+        const D = Math.ceil(2 * S); // strip depth, px
+        for (const side of ['left', 'right', 'top', 'bottom']) {
+          if (stale()) break;
+          const vertical = side === 'left' || side === 'right';
+          const len = Math.floor(vertical ? b - t : r - l);
+          // The canvas starts exactly on the trim line, so its outer row is the artwork's edge.
+          const ox = side === 'right' ? r - D : l, oy = side === 'bottom' ? b - D : t;
+          const c = document.createElement('canvas');
+          c.width = vertical ? D : len; c.height = vertical ? len : D;
+          // Print intent: renders what prints, and doesn't wait on animation frames (which stall in a background tab).
+          await page.render({ canvas: c, viewport: vp, intent: 'print', transform: [1, 0, 0, 1, -ox, -oy] }).promise;
+          const px = c.getContext('2d').getImageData(0, 0, c.width, c.height).data;
+          const px32 = new Uint32Array(px.buffer);
+          const rows = [];
+          for (let k = 0; k < D; k++) {
+            const at = side === 'right' || side === 'bottom' ? D - 1 - k : k; // distance from the trim
+            if (!vertical) { rows.push(px.subarray(at * len * 4, (at + 1) * len * 4)); continue; }
+            const row = new Uint32Array(len);
+            for (let j = 0; j < len; j++) row[j] = px32[j * D + at];
+            rows.push(new Uint8ClampedArray(row.buffer));
+          }
+          const hit = Bleedline.edgeLine(rows, S);
+          if (hit) found.push({ page: n, side, ...hit });
+        }
+        page.cleanup();
+      }
+    } finally {
+      tk.destroy();
+    }
+    return found;
+  }
+  return { show, setHide, checkEdges };
 })();
 </script>
 <script>/*PDFLIB*/</script>
@@ -607,6 +663,7 @@ const Preview = (() => {
       entry.pages = res.pages;
       entry.error = null;
       dl.disabled = false;
+      edgeCheck(entry, run, res, bytes, opts);
     } catch (err) {
       if (run !== entry.run) return;
       setUrls(entry, null, null); entry.pages = null;
@@ -626,6 +683,47 @@ const Preview = (() => {
       }
     }
     if (selected === entry) showPreview(entry);
+  }
+
+  // After the PDF is made: look for a thin line along the trim edges (see Bleedline.edgeLine) and warn.
+  // Runs in the background; the file can be downloaded meanwhile, and nothing in it is changed.
+  async function edgeCheck(entry, run, res, bytes, opts) {
+    const mode = opts.mode;
+    const wl = entry.el.querySelector('ul.warn');
+    let found;
+    try {
+      // A copy with only the trim area drawn: the same pixels inside the trim, 9x quicker to render.
+      if (!res.pages.some((p) => p.geo.pieces)) return;
+      const centre = await Bleedline.addBleed(PDFLib, bytes, entry.kind, { ...opts, centreOnly: true });
+      if (run !== entry.run) return;
+      found = await Preview.checkEdges(centre.bytes, res.pages.map((p) => p.geo), () => run !== entry.run);
+    } catch (e) { console.error('Edge check failed', e); return; }
+    if (!found || !found.length || run !== entry.run) return;
+    const order = ['top', 'bottom', 'left', 'right'];
+    const sides = order.filter((s) => found.some((f) => f.side === s));
+    const pages = [...new Set(found.map((f) => f.page))];
+    const widest = Math.max(...found.map((f) => f.widthPt)) / Bleedline.MM;
+    const white = found.filter((f) => f.lighter).length * 2 >= found.length;
+    const list = (a) => (a.length > 1 ? `${a.slice(0, -1).join(', ')} and ${a[a.length - 1]}` : a[0]);
+    const where = res.pages.length === 1 ? '' : pages.length === res.pages.length ? ' (all pages)' : ` (page${pages.length > 1 ? 's' : ''} ${ranges(pages)})`;
+    const li = document.createElement('li');
+    li.textContent = (white
+      ? `Artwork stops short of the trim on the ${list(sides)} edge${sides.length > 1 ? 's' : ''}${where}, leaving a white gap up to ${widest < 0.1 ? widest.toFixed(2) : widest.toFixed(1)} mm. `
+      : `Artwork has a thin line along the trim on the ${list(sides)} edge${sides.length > 1 ? 's' : ''}${where}, up to ${widest < 0.1 ? widest.toFixed(2) : widest.toFixed(1)} mm wide. `) +
+      (mode === 'stretch' ? 'The stretched bleed widens it' : 'The mirrored bleed doubles it') +
+      ', so a thin line may show at the cut. Nothing was changed: check the original artwork.';
+    wl.appendChild(li);
+  }
+  // [1,2,3,5] -> "1–3, 5"
+  function ranges(a) {
+    const out = [];
+    for (let i = 0; i < a.length; i++) {
+      let j = i;
+      while (j + 1 < a.length && a[j + 1] === a[j] + 1) j++;
+      out.push(j > i ? `${a[i]}–${a[j]}` : `${a[i]}`);
+      i = j;
+    }
+    return out.join(', ');
   }
 
   function select(entry) {
